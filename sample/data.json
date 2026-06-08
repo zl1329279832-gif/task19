@@ -1,0 +1,77 @@
+{
+  "orders": [
+    { "id": "O001", "name": "手机壳-A批", "dueDate": "2026-06-15T18:00:00", "priority": 3, "locked": false, "quantity": 5000, "customer": "华为" },
+    { "id": "O002", "name": "平板支架-B批", "dueDate": "2026-06-14T18:00:00", "priority": 5, "locked": true, "quantity": 3000, "customer": "小米" },
+    { "id": "O003", "name": "充电器外壳-C批", "dueDate": "2026-06-16T12:00:00", "priority": 2, "locked": false, "quantity": 8000, "customer": "OPPO" },
+    { "id": "O004", "name": "耳机盒-D批", "dueDate": "2026-06-13T18:00:00", "priority": 7, "locked": false, "quantity": 2000, "customer": "苹果" },
+    { "id": "O005", "name": "路由器壳体-E批", "dueDate": "2026-06-17T18:00:00", "priority": 1, "locked": false, "quantity": 4000, "customer": "TP-Link" },
+    { "id": "O006", "name": "智能手表壳-F批", "dueDate": "2026-06-14T08:00:00", "priority": 8, "locked": false, "quantity": 1500, "customer": "华为" }
+  ],
+  "processes": [
+    { "id": "P001", "orderId": "O001", "name": "注塑成型", "equipmentId": "EQ01", "duration": 4, "sequence": 1, "dependencies": [] },
+    { "id": "P002", "orderId": "O001", "name": "CNC精加工", "equipmentId": "EQ03", "duration": 3, "sequence": 2, "dependencies": ["P001"] },
+    { "id": "P003", "orderId": "O001", "name": "喷涂上色", "equipmentId": "EQ05", "duration": 2.5, "sequence": 3, "dependencies": ["P002"] },
+    { "id": "P004", "orderId": "O001", "name": "品质检验", "equipmentId": "EQ06", "duration": 1.5, "sequence": 4, "dependencies": ["P003"] },
+
+    { "id": "P005", "orderId": "O002", "name": "钣金冲压", "equipmentId": "EQ02", "duration": 3, "sequence": 1, "dependencies": [] },
+    { "id": "P006", "orderId": "O002", "name": "折弯成型", "equipmentId": "EQ02", "duration": 2.5, "sequence": 2, "dependencies": ["P005"] },
+    { "id": "P007", "orderId": "O002", "name": "焊接组装", "equipmentId": "EQ04", "duration": 3.5, "sequence": 3, "dependencies": ["P006"] },
+    { "id": "P008", "orderId": "O002", "name": "表面处理", "equipmentId": "EQ05", "duration": 2, "sequence": 4, "dependencies": ["P007"] },
+
+    { "id": "P009", "orderId": "O003", "name": "注塑成型", "equipmentId": "EQ01", "duration": 5, "sequence": 1, "dependencies": [] },
+    { "id": "P010", "orderId": "O003", "name": "装配嵌件", "equipmentId": "EQ04", "duration": 3, "sequence": 2, "dependencies": ["P009"] },
+    { "id": "P011", "orderId": "O003", "name": "超声波焊接", "equipmentId": "EQ04", "duration": 2, "sequence": 3, "dependencies": ["P010"] },
+    { "id": "P012", "orderId": "O003", "name": "品质检验", "equipmentId": "EQ06", "duration": 1.5, "sequence": 4, "dependencies": ["P011"] },
+
+    { "id": "P013", "orderId": "O004", "name": "注塑成型", "equipmentId": "EQ01", "duration": 2.5, "sequence": 1, "dependencies": [] },
+    { "id": "P014", "orderId": "O004", "name": "CNC精加工", "equipmentId": "EQ03", "duration": 4, "sequence": 2, "dependencies": ["P013"] },
+    { "id": "P015", "orderId": "O004", "name": "阳极氧化", "equipmentId": "EQ05", "duration": 3, "sequence": 3, "dependencies": ["P014"] },
+    { "id": "P016", "orderId": "O004", "name": "镭雕打标", "equipmentId": "EQ06", "duration": 1, "sequence": 4, "dependencies": ["P015"] },
+
+    { "id": "P017", "orderId": "O005", "name": "注塑成型", "equipmentId": "EQ01", "duration": 4.5, "sequence": 1, "dependencies": [] },
+    { "id": "P018", "orderId": "O005", "name": "钻孔攻牙", "equipmentId": "EQ03", "duration": 2, "sequence": 2, "dependencies": ["P017"] },
+    { "id": "P019", "orderId": "O005", "name": "喷涂上色", "equipmentId": "EQ05", "duration": 2, "sequence": 3, "dependencies": ["P018"] },
+    { "id": "P020", "orderId": "O005", "name": "组装测试", "equipmentId": "EQ06", "duration": 2.5, "sequence": 4, "dependencies": ["P019"] },
+
+    { "id": "P021", "orderId": "O006", "name": "MIM成型", "equipmentId": "EQ01", "duration": 3, "sequence": 1, "dependencies": [] },
+    { "id": "P022", "orderId": "O006", "name": "CNC精加工", "equipmentId": "EQ03", "duration": 5, "sequence": 2, "dependencies": ["P021"] },
+    { "id": "P023", "orderId": "O006", "name": "PVD镀膜", "equipmentId": "EQ05", "duration": 3, "sequence": 3, "dependencies": ["P022"] },
+    { "id": "P024", "orderId": "O006", "name": "品质全检", "equipmentId": "EQ06", "duration": 2, "sequence": 4, "dependencies": ["P023"] }
+  ],
+  "equipment": [
+    { "id": "EQ01", "name": "注塑机#1", "type": "注塑", "capacity": 1, "maintenance": [
+      { "start": "2026-06-12T06:00:00", "end": "2026-06-12T10:00:00", "reason": "模具保养" }
+    ]},
+    { "id": "EQ02", "name": "冲压机#2", "type": "冲压", "capacity": 1, "maintenance": [] },
+    { "id": "EQ03", "name": "CNC中心#3", "type": "CNC", "capacity": 1, "maintenance": [
+      { "start": "2026-06-14T22:00:00", "end": "2026-06-15T06:00:00", "reason": "刀具更换+精度校准" }
+    ]},
+    { "id": "EQ04", "name": "焊接工位#4", "type": "焊接", "capacity": 1, "maintenance": [] },
+    { "id": "EQ05", "name": "喷涂线#5", "type": "喷涂", "capacity": 1, "maintenance": [
+      { "start": "2026-06-13T12:00:00", "end": "2026-06-13T14:00:00", "reason": "喷枪清洗" }
+    ]},
+    { "id": "EQ06", "name": "检测台#6", "type": "检测", "capacity": 1, "maintenance": [] }
+  ],
+  "shifts": [
+    { "id": "S01", "name": "白班", "startTime": "08:00", "endTime": "20:00", "crew": "A班组", "equipmentIds": [] },
+    { "id": "S02", "name": "夜班", "startTime": "20:00", "endTime": "08:00", "crew": "B班组", "equipmentIds": [] }
+  ],
+  "materials": [
+    { "id": "M001", "name": "PC原料-透明", "processId": "P001", "arrivalTime": "2026-06-09T10:00:00", "quantity": 500 },
+    { "id": "M002", "name": "304不锈钢板", "processId": "P005", "arrivalTime": "2026-06-09T08:00:00", "quantity": 200 },
+    { "id": "M003", "name": "ABS原料", "processId": "P009", "arrivalTime": "2026-06-10T14:00:00", "quantity": 800 },
+    { "id": "M004", "name": "铝合金锭", "processId": "P013", "arrivalTime": "2026-06-09T06:00:00", "quantity": 100 },
+    { "id": "M005", "name": "PC+ABS复合料", "processId": "P017", "arrivalTime": "2026-06-10T08:00:00", "quantity": 400 },
+    { "id": "M006", "name": "陶瓷粉末", "processId": "P021", "arrivalTime": "2026-06-09T16:00:00", "quantity": 50 },
+    { "id": "M007", "name": "UV涂料", "processId": "P003", "arrivalTime": "2026-06-11T09:00:00", "quantity": 30 },
+    { "id": "M008", "name": "焊丝", "processId": "P007", "arrivalTime": "2026-06-09T08:00:00", "quantity": 60 }
+  ],
+  "routes": [
+    { "orderId": "O001", "steps": ["P001", "P002", "P003", "P004"] },
+    { "orderId": "O002", "steps": ["P005", "P006", "P007", "P008"] },
+    { "orderId": "O003", "steps": ["P009", "P010", "P011", "P012"] },
+    { "orderId": "O004", "steps": ["P013", "P014", "P015", "P016"] },
+    { "orderId": "O005", "steps": ["P017", "P018", "P019", "P020"] },
+    { "orderId": "O006", "steps": ["P021", "P022", "P023", "P024"] }
+  ]
+}

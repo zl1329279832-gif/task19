@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>生产排产看板</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="app-layout">
+
+  <!-- ======== 顶栏 ======== -->
+  <header class="app-header">
+    <h1>
+      <span class="logo-icon">&#9776;</span>
+      生产排产看板
+    </h1>
+    <div class="header-actions">
+      <button class="btn btn-sm" id="load-sample-btn">加载示例数据</button>
+      <button class="btn btn-sm" id="import-all-btn">导入JSON</button>
+      <button class="btn btn-sm" id="save-plan-btn">保存方案</button>
+    </div>
+  </header>
+
+  <!-- ======== 工具栏 ======== -->
+  <div class="toolbar">
+    <!-- 排产操作 -->
+    <div class="toolbar-group">
+      <button class="btn btn-primary" id="schedule-btn">&#9654; 自动排产</button>
+      <button class="btn btn-warning" id="rush-btn">&#10010; 插单</button>
+    </div>
+
+    <!-- 撤销/重做 -->
+    <div class="toolbar-group">
+      <button class="btn btn-icon" id="undo-btn" disabled title="撤销 (Ctrl+Z)">&#8630;</button>
+      <button class="btn btn-icon" id="redo-btn" disabled title="重做 (Ctrl+Y)">&#8631;</button>
+    </div>
+
+    <!-- 视图切换 -->
+    <div class="toolbar-group">
+      <span class="toolbar-label">视图</span>
+      <button class="view-btn active" data-view="equipment">设备</button>
+      <button class="view-btn" data-view="order">订单</button>
+      <button class="view-btn" data-view="crew">班组</button>
+    </div>
+
+    <!-- 缩放 -->
+    <div class="toolbar-group">
+      <span class="toolbar-label">缩放</span>
+      <button class="btn btn-icon" id="zoom-out-btn" title="缩小">&#8722;</button>
+      <button class="btn btn-icon" id="zoom-in-btn" title="放大">&#43;</button>
+    </div>
+
+    <!-- 导出 -->
+    <div class="toolbar-group">
+      <button class="btn" id="export-schedule-btn">导出排产表</button>
+      <button class="btn" id="export-risk-btn">导出风险报告</button>
+    </div>
+
+    <!-- 侧栏切换 -->
+    <div class="toolbar-group">
+      <button class="btn btn-icon" id="toggle-sidebar" title="切换侧栏">&#9776;</button>
+    </div>
+  </div>
+
+  <!-- ======== 主体 ======== -->
+  <div class="app-body">
+
+    <!-- 左侧栏 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-tabs">
+        <button class="tab-btn active" data-tab="data">数据</button>
+        <button class="tab-btn" data-tab="orders">订单</button>
+        <button class="tab-btn" data-tab="plans">方案</button>
+      </div>
+      <div class="sidebar-body">
+
+        <!-- 数据选项卡 -->
+        <div class="tab-panel active" id="tab-data">
+          <div class="sidebar-section">
+            <h3>数据摘要</h3>
+            <div id="data-summary">
+              <span class="summary-item">订单 <b>0</b></span>
+              <span class="summary-item">工序 <b>0</b></span>
+              <span class="summary-item">设备 <b>0</b></span>
+              <span class="summary-item">班次 <b>0</b></span>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <h3>分项导入 (CSV/JSON)</h3>
+            <div class="import-grid">
+              <button class="btn" data-import="orders">订单</button>
+              <button class="btn" data-import="processes">工序</button>
+              <button class="btn" data-import="equipment">设备</button>
+              <button class="btn" data-import="shifts">班次</button>
+              <button class="btn" data-import="materials">物料</button>
+              <button class="btn" data-import="routes">工艺路线</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 订单选项卡 -->
+        <div class="tab-panel" id="tab-orders">
+          <div class="sidebar-section">
+            <h3>订单列表</h3>
+            <div id="order-list">
+              <div class="empty-hint">暂无订单数据</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 方案选项卡 -->
+        <div class="tab-panel" id="tab-plans">
+          <div class="sidebar-section">
+            <h3>保存的方案</h3>
+            <div id="plan-list">
+              <div class="empty-hint">暂无保存的方案</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- 甘特图区域 -->
+    <div class="gantt-container" id="gantt-container">
+      <canvas id="gantt-canvas"></canvas>
+      <canvas id="gantt-overlay"></canvas>
+      <div id="loading-indicator" class="hidden">
+        <div class="spinner"></div>
+        <span class="loading-text">正在计算排产...</span>
+      </div>
+    </div>
+
+    <!-- 右侧面板 -->
+    <aside class="right-panel">
+      <!-- 冲突/风险 -->
+      <div class="panel-header">
+        <h3>风险提示 <span id="conflict-count" class="badge badge-ok">0</span></h3>
+      </div>
+      <div class="panel-body" style="max-height:45%; border-bottom:1px solid var(--border);">
+        <div id="conflict-list">
+          <div class="empty-hint">排产后显示风险项</div>
+        </div>
+      </div>
+      <!-- 详情 -->
+      <div class="panel-header">
+        <h3>工序详情</h3>
+      </div>
+      <div class="panel-body">
+        <div id="detail-panel">
+          <div class="empty-hint">点击工序查看详情</div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- ======== 状态栏 ======== -->
+  <footer class="status-bar">
+    <div id="stats-bar">
+      <span class="stat">暂无排产数据</span>
+    </div>
+    <div>
+      <span>Ctrl+Z 撤销 | Ctrl+Y 重做 | 滚轮平移 | Ctrl+滚轮缩放 | 拖拽工序调整时间</span>
+    </div>
+  </footer>
+
+</div>
+
+<!-- Toast 容器 -->
+<div id="toast-container"></div>
+
+<!-- JS 模块加载 -->
+<script src="js/utils.js"></script>
+<script src="js/historyManager.js"></script>
+<script src="js/ganttRenderer.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
