@@ -1,0 +1,169 @@
+/* ========== Reset & Base ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px; color: #1a1a2e; background: #f0f2f5; overflow: hidden; }
+
+/* ========== Toolbar ========== */
+.toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 52px; padding: 0 16px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 100; position: relative;
+}
+.toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 12px; }
+.logo { font-size: 16px; font-weight: 700; white-space: nowrap; }
+.btn-group { display: flex; gap: 4px; }
+.btn {
+  padding: 6px 12px; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px;
+  background: rgba(255,255,255,0.08); color: #e0e0e0; font-size: 12px; cursor: pointer;
+  transition: all 0.2s; white-space: nowrap;
+}
+.btn:hover { background: rgba(255,255,255,0.18); color: #fff; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+.btn-primary:hover { background: #2563eb; }
+.btn-success { background: #10b981; border-color: #10b981; color: #fff; }
+.btn-success:hover { background: #059669; }
+.btn-warning { background: #f59e0b; border-color: #f59e0b; color: #1a1a2e; }
+.btn-warning:hover { background: #d97706; }
+.view-switch { display: flex; align-items: center; gap: 4px; }
+.view-switch label { font-size: 12px; color: #aaa; }
+.view-btn.active { background: #6366f1; border-color: #6366f1; color: #fff; }
+.zoom-control { display: flex; align-items: center; gap: 6px; }
+.zoom-control label { font-size: 12px; color: #aaa; }
+.zoom-control input[type="range"] { width: 80px; accent-color: #6366f1; }
+.zoom-control span { font-size: 11px; color: #ccc; min-width: 14px; }
+
+/* ========== Main Layout ========== */
+.main-container { display: flex; height: calc(100vh - 52px - 28px); }
+
+/* ========== Sidebar ========== */
+.sidebar {
+  width: 280px; min-width: 280px; background: #fff; border-right: 1px solid #e2e8f0;
+  overflow-y: auto; display: flex; flex-direction: column; gap: 0;
+}
+.panel { padding: 14px; border-bottom: 1px solid #e2e8f0; }
+.panel-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+.badge {
+  background: #ef4444; color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 10px;
+  min-width: 18px; text-align: center;
+}
+.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat-item {
+  background: #f8fafc; border-radius: 8px; padding: 10px; text-align: center;
+  border: 1px solid #e2e8f0;
+}
+.stat-label { display: block; font-size: 11px; color: #64748b; }
+.stat-value { display: block; font-size: 20px; font-weight: 700; color: #1a1a2e; }
+.alert-list { max-height: 260px; overflow-y: auto; }
+.alert-item {
+  padding: 8px 10px; margin-bottom: 6px; border-radius: 6px; font-size: 12px;
+  line-height: 1.4; border-left: 3px solid;
+}
+.alert-item.critical { background: #fef2f2; border-color: #ef4444; color: #991b1b; }
+.alert-item.warning { background: #fffbeb; border-color: #f59e0b; color: #92400e; }
+.alert-item.info { background: #eff6ff; border-color: #3b82f6; color: #1e40af; }
+.empty-hint { font-size: 12px; color: #94a3b8; text-align: center; padding: 12px; }
+.maintenance-list { max-height: 150px; overflow-y: auto; }
+.maint-item {
+  padding: 6px 8px; margin-bottom: 4px; background: #fffbeb; border-radius: 4px;
+  font-size: 11px; border-left: 3px solid #f59e0b;
+}
+
+/* ========== Gantt Container ========== */
+.gantt-container {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; position: relative;
+}
+.gantt-header {
+  height: 48px; min-height: 48px; border-bottom: 2px solid #e2e8f0; overflow-x: auto; overflow-y: hidden; position: relative;
+}
+.gantt-header::-webkit-scrollbar { display: none; }
+.gantt-header canvas { display: block; }
+.gantt-body { flex: 1; overflow: auto; position: relative; }
+.gantt-body canvas { display: block; }
+.gantt-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.95); z-index: 10;
+}
+.gantt-empty.hidden { display: none; }
+.empty-content { text-align: center; }
+.empty-content p { margin-bottom: 12px; color: #64748b; font-size: 15px; }
+.empty-content .btn { margin: 4px; }
+
+/* ========== Gantt Tooltip ========== */
+.gantt-tooltip {
+  position: absolute; background: #1a1a2e; color: #fff; padding: 10px 14px; border-radius: 8px;
+  font-size: 12px; pointer-events: none; z-index: 50; display: none; max-width: 300px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3); line-height: 1.6;
+}
+.gantt-tooltip .tt-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.gantt-tooltip .tt-row { display: flex; justify-content: space-between; gap: 16px; }
+.gantt-tooltip .tt-label { color: #94a3b8; }
+.gantt-tooltip .tt-risk { color: #f87171; font-weight: 600; margin-top: 4px; }
+
+/* ========== Modals ========== */
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center;
+  justify-content: center; z-index: 200;
+}
+.modal.active { display: flex; }
+.modal-content {
+  background: #fff; border-radius: 12px; width: 500px; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.modal-content.modal-lg { width: 700px; }
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid #e2e8f0;
+}
+.modal-header h2 { font-size: 16px; }
+.modal-close {
+  background: none; border: none; font-size: 22px; cursor: pointer; color: #64748b;
+  width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+}
+.modal-close:hover { background: #f1f5f9; }
+.modal-body { padding: 20px; }
+
+/* ========== Import Tabs ========== */
+.import-tabs { display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap; }
+.import-tab {
+  padding: 6px 14px; border: 1px solid #e2e8f0; border-radius: 6px;
+  background: #f8fafc; cursor: pointer; font-size: 12px; color: #475569;
+}
+.import-tab.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+.import-panel { display: block; }
+.import-panel.hidden { display: none; }
+.import-panel .hint { font-size: 11px; color: #64748b; margin-bottom: 8px; }
+.import-panel textarea {
+  width: 100%; height: 140px; border: 1px solid #e2e8f0; border-radius: 8px;
+  padding: 10px; font-family: 'Consolas', monospace; font-size: 12px; resize: vertical;
+}
+.import-panel textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+.import-actions { margin-top: 14px; display: flex; gap: 10px; align-items: center; }
+.file-label {
+  padding: 6px 12px; border: 1px dashed #94a3b8; border-radius: 6px; cursor: pointer;
+  font-size: 12px; color: #64748b;
+}
+.file-label:hover { border-color: #6366f1; color: #6366f1; }
+
+/* ========== Forms ========== */
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 4px; }
+.form-group input, .form-group select {
+  width: 100%; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 13px;
+}
+.form-group input:focus, .form-group select:focus { outline: none; border-color: #6366f1; }
+
+/* ========== Status Bar ========== */
+.status-bar {
+  height: 28px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; background: #1a1a2e; color: #94a3b8; font-size: 11px;
+}
+
+/* ========== Scrollbar ========== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ========== Animations ========== */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.alert-item { animation: fadeIn 0.3s ease; }
