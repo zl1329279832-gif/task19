@@ -2,28 +2,28 @@
 // Handles: auto-scheduling, conflict detection, risk analysis, dependency resolution
 
 self.onmessage = function(e) {
-  const { action, data, requestVersion } = e.data;
+  const { action, data, requestVersion, scenarioId } = e.data;
   let result;
   switch (action) {
     case 'autoSchedule':
       result = autoSchedule(data);
-      self.postMessage({ action: 'autoScheduleResult', data: result, requestVersion });
+      self.postMessage({ action: 'autoScheduleResult', data: result, requestVersion, scenarioId });
       break;
     case 'detectConflicts':
       result = detectConflicts(data);
-      self.postMessage({ action: 'conflictResult', data: result, requestVersion });
+      self.postMessage({ action: 'conflictResult', data: result, requestVersion, scenarioId });
       break;
     case 'analyzeRisks':
       result = analyzeRisks(data);
-      self.postMessage({ action: 'riskResult', data: result, requestVersion });
+      self.postMessage({ action: 'riskResult', data: result, requestVersion, scenarioId });
       break;
     case 'insertOrder':
       result = insertOrder(data);
-      self.postMessage({ action: 'insertResult', data: result, requestVersion });
+      self.postMessage({ action: 'insertResult', data: result, requestVersion, scenarioId });
       break;
     case 'recalcAfterDrag':
       result = recalcAfterDrag(data);
-      self.postMessage({ action: 'recalcResult', data: result, requestVersion });
+      self.postMessage({ action: 'recalcResult', data: result, requestVersion, scenarioId });
       break;
   }
 };

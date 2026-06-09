@@ -33,14 +33,24 @@
   }
 
   function handleWorkerMessage(e) {
-    const { action, data, requestVersion } = e.data;
+    const { action, data, requestVersion, scenarioId } = e.data;
+
+    // Route sandbox scenario results to SandboxManager
+    if (scenarioId) {
+      if (action === 'autoScheduleResult') {
+        sandbox.handleComputeResult(scenarioId, data);
+        setStatus('方案计算完成');
+      }
+      return;
+    }
+
     // Discard stale responses: only accept results matching the latest request
     if (requestVersion !== undefined && requestVersion !== currentRequestVersion) return;
     switch (action) {
       case 'autoScheduleResult':
         state.scheduled = data.scheduled;
         state.alerts = data.alerts;
-        history.push(state.scheduled);
+        activeHistory.push(state.scheduled);
         onScheduleUpdated();
         setStatus(`自动排产完成：${data.scheduled.length} 个工序已排程`);
         break;
@@ -56,14 +66,14 @@
       case 'insertResult':
         state.scheduled = data.scheduled;
         state.alerts = data.alerts;
-        history.push(state.scheduled);
+        activeHistory.push(state.scheduled);
         onScheduleUpdated();
         setStatus('插单排产完成');
         break;
       case 'recalcResult':
         state.scheduled = data.updated;
         state.alerts = data.alerts;
-        history.push(state.scheduled);
+        activeHistory.push(state.scheduled);
         onScheduleUpdated();
         if (data.cascadeUpdates && data.cascadeUpdates.length > 0) {
           setStatus(`拖拽完成，${data.cascadeUpdates.length} 个后续工序已联动调整`);
@@ -84,10 +94,148 @@
   }
 
   // ========== History ==========
-  const history = new HistoryManager(50);
-  history.onchange = (canUndo, canRedo) => {
+  const mainHistory = new HistoryManager(50);
+  let activeHistory = mainHistory;
+  function historyOnChange(canUndo, canRedo) {
     document.getElementById('btnUndo').disabled = !canUndo;
     document.getElementById('btnRedo').disabled = !canRedo;
+  }
+  mainHistory.onchange = historyOnChange;
+
+  // ========== Sandbox ==========
+  const sandbox = new SandboxManager();
+  let mainStateBackup = null;
+
+  sandbox.onScenarioSwitch = (scenario) => {
+    state.orders = JSON.parse(JSON.stringify(scenario.orders));
+    state.processes = JSON.parse(JSON.stringify(scenario.processes));
+    state.equipment = JSON.parse(JSON.stringify(scenario.equipment));
+    state.shifts = JSON.parse(JSON.stringify(scenario.shifts));
+    state.materials = JSON.parse(JSON.stringify(scenario.materials));
+    state.routes = JSON.parse(JSON.stringify(scenario.routes));
+    state.maintenanceWindows = JSON.parse(JSON.stringify(scenario.maintenanceWindows));
+    state.scheduled = JSON.parse(JSON.stringify(scenario.scheduled));
+    state.alerts = scenario.alerts ? [...scenario.alerts] : [];
+    state.risks = scenario.risks ? [...scenario.risks] : [];
+    state.activeScenarioId = scenario.id;
+    activeHistory = scenario.history;
+    activeHistory.onchange = historyOnChange;
+    historyOnChange(activeHistory.canUndo(), activeHistory.canRedo());
+    onScheduleUpdated();
+    setStatus('已切换到方案: ' + scenario.name);
+  };
+
+  sandbox.onScenarioCompute = (scenario) => {
+    currentRequestVersion++;
+    worker.postMessage({
+      action: 'autoSchedule',
+      data: {
+        orders: scenario.orders,
+        processes: scenario.processes,
+        equipment: scenario.equipment,
+        shifts: scenario.shifts,
+        materials: scenario.materials,
+        routes: scenario.routes,
+        maintenanceWindows: scenario.maintenanceWindows
+      },
+      requestVersion: currentRequestVersion,
+      scenarioId: scenario.id
+    });
+  };
+
+  sandbox.onScenariosChange = () => {
+    sandbox.renderPanel();
+  };
+
+  function enterSandboxMode() {
+    if (!mainStateBackup) {
+      mainStateBackup = {
+        orders: JSON.parse(JSON.stringify(state.orders)),
+        processes: JSON.parse(JSON.stringify(state.processes)),
+        equipment: JSON.parse(JSON.stringify(state.equipment)),
+        shifts: JSON.parse(JSON.stringify(state.shifts)),
+        materials: JSON.parse(JSON.stringify(state.materials)),
+        routes: JSON.parse(JSON.stringify(state.routes)),
+        maintenanceWindows: JSON.parse(JSON.stringify(state.maintenanceWindows)),
+        scheduled: JSON.parse(JSON.stringify(state.scheduled)),
+        alerts: [...(state.alerts || [])],
+        risks: [...(state.risks || [])]
+      };
+    }
+    state.sandboxMode = true;
+  }
+
+  function exitSandboxMode() {
+    if (mainStateBackup) {
+      state.orders = mainStateBackup.orders;
+      state.processes = mainStateBackup.processes;
+      state.equipment = mainStateBackup.equipment;
+      state.shifts = mainStateBackup.shifts;
+      state.materials = mainStateBackup.materials;
+      state.routes = mainStateBackup.routes;
+      state.maintenanceWindows = mainStateBackup.maintenanceWindows;
+      state.scheduled = mainStateBackup.scheduled;
+      state.alerts = mainStateBackup.alerts;
+      state.risks = mainStateBackup.risks;
+      mainStateBackup = null;
+    }
+    state.sandboxMode = false;
+    state.activeScenarioId = null;
+    sandbox.activeScenarioId = null;
+    activeHistory = mainHistory;
+    mainHistory.onchange = historyOnChange;
+    historyOnChange(mainHistory.canUndo(), mainHistory.canRedo());
+    onScheduleUpdated();
+  }
+
+  function applyScenarioToMain(scenarioId) {
+    const sc = sandbox.getScenario(scenarioId);
+    if (!sc) return;
+    if (!confirm('确定将方案 "' + sc.name + '" 应用为当前排产？这将覆盖当前数据。')) return;
+    mainStateBackup = null;
+    state.orders = JSON.parse(JSON.stringify(sc.orders));
+    state.processes = JSON.parse(JSON.stringify(sc.processes));
+    state.equipment = JSON.parse(JSON.stringify(sc.equipment));
+    state.shifts = JSON.parse(JSON.stringify(sc.shifts));
+    state.materials = JSON.parse(JSON.stringify(sc.materials));
+    state.routes = JSON.parse(JSON.stringify(sc.routes));
+    state.maintenanceWindows = JSON.parse(JSON.stringify(sc.maintenanceWindows));
+    state.scheduled = JSON.parse(JSON.stringify(sc.scheduled));
+    state.alerts = sc.alerts ? [...sc.alerts] : [];
+    state.risks = sc.risks ? [...sc.risks] : [];
+    state.sandboxMode = false;
+    state.activeScenarioId = null;
+    sandbox.activeScenarioId = null;
+    activeHistory = mainHistory;
+    mainHistory.push(state.scheduled);
+    mainHistory.onchange = historyOnChange;
+    sandbox.isSandboxMode = false;
+    document.getElementById('sandboxPanel').classList.remove('open');
+    document.getElementById('btnSandbox').classList.remove('active');
+    document.querySelector('.main-container').classList.remove('sandbox-open');
+    onScheduleUpdated();
+    setStatus('已应用方案 "' + sc.name + '" 为当前排产');
+  }
+
+  // Sandbox global helpers
+  window.applyScenarioToMain = applyScenarioToMain;
+  window.switchScenario = (id) => { enterSandboxMode(); sandbox.switchTo(id); };
+  window.deleteScenario = (id) => sandbox.deleteScenario(id);
+  window.duplicateScenario = (id) => sandbox.duplicateScenario(id);
+  window.editScenarioParams = (id) => sandbox.renderParamEditor(id);
+  window.sandboxUpdateShift = (id, i, f, v) => sandbox.updateShift(id, i, f, v);
+  window.sandboxAddShift = (id) => sandbox.addShift(id);
+  window.sandboxUpdateMaint = (id, i, f, v) => sandbox.updateMaintenance(id, i, f, v);
+  window.sandboxAddMaint = (id) => sandbox.addMaintenance(id);
+  window.sandboxRemoveMaint = (id, i) => sandbox.removeMaintenance(id, i);
+  window.sandboxUpdateMaterial = (id, i, v) => sandbox.updateMaterial(id, i, v);
+  window.sandboxUpdateOrder = (id, i, f, v) => sandbox.updateOrder(id, i, f, v);
+  window.sandboxInsertOrder = (id) => {
+    const orderId = document.getElementById('sbInsertId').value || 'URG-' + Date.now();
+    const product = document.getElementById('sbInsertProduct').value || '紧急产品';
+    const qty = parseInt(document.getElementById('sbInsertQty').value) || 10;
+    const deadline = (document.getElementById('sbInsertDeadline').value || '').replace('T', ' ') || new Date(Date.now() + 86400000 * 3).toISOString().slice(0, 16).replace('T', ' ');
+    sandbox.insertUrgentOrder(id, { id: orderId, productType: product, quantity: qty, deadline, priority: 5, locked: false });
   };
 
   // ========== Gantt ==========
@@ -173,6 +321,17 @@
     renderMaintenance();
     // Run risk analysis
     sendToWorker('analyzeRisks', {});
+    // Sync active sandbox scenario
+    if (sandbox.isSandboxMode && sandbox.activeScenarioId) {
+      const sc = sandbox.getActiveScenario();
+      if (sc) {
+        sc.scheduled = JSON.parse(JSON.stringify(state.scheduled));
+        sc.alerts = [...(state.alerts || [])];
+        sc.risks = [...(state.risks || [])];
+        sandbox.calcKPI(sc);
+        sandbox.renderPanel();
+      }
+    }
   }
 
   // ========== Event Bindings ==========
@@ -215,7 +374,7 @@
 
     // Undo/Redo
     document.getElementById('btnUndo').addEventListener('click', () => {
-      const prev = history.undo();
+      const prev = activeHistory.undo();
       if (prev) {
         state.scheduled = prev;
         renderGantt();
@@ -223,7 +382,7 @@
       }
     });
     document.getElementById('btnRedo').addEventListener('click', () => {
-      const next = history.redo();
+      const next = activeHistory.redo();
       if (next) {
         state.scheduled = next;
         renderGantt();
@@ -280,6 +439,65 @@
       if (e.ctrlKey && e.key === 'z') { e.preventDefault(); document.getElementById('btnUndo').click(); }
       if (e.ctrlKey && e.key === 'y') { e.preventDefault(); document.getElementById('btnRedo').click(); }
       if (e.ctrlKey && e.key === 's') { e.preventDefault(); document.getElementById('btnSave').click(); }
+    });
+
+    // ========== Sandbox Events ==========
+    document.getElementById('btnSandbox').addEventListener('click', () => {
+      sandbox.isSandboxMode = !sandbox.isSandboxMode;
+      document.getElementById('sandboxPanel').classList.toggle('open', sandbox.isSandboxMode);
+      document.getElementById('btnSandbox').classList.toggle('active', sandbox.isSandboxMode);
+      document.querySelector('.main-container').classList.toggle('sandbox-open', sandbox.isSandboxMode);
+      if (!sandbox.isSandboxMode) {
+        exitSandboxMode();
+      }
+      sandbox.renderPanel();
+    });
+
+    document.getElementById('btnCloseSandbox').addEventListener('click', () => {
+      sandbox.isSandboxMode = false;
+      document.getElementById('sandboxPanel').classList.remove('open');
+      document.getElementById('btnSandbox').classList.remove('active');
+      document.querySelector('.main-container').classList.remove('sandbox-open');
+      exitSandboxMode();
+    });
+
+    document.getElementById('btnNewScenario').addEventListener('click', () => {
+      if (sandbox.scenarios.length >= sandbox.maxScenarios) {
+        alert('方案数量已达上限 (' + sandbox.maxScenarios + ')');
+        return;
+      }
+      openModal('scenarioModal');
+    });
+
+    document.getElementById('btnDoCreateScenario').addEventListener('click', () => {
+      const name = document.getElementById('scenarioName').value.trim()
+        || ('方案 ' + String.fromCharCode(65 + sandbox.scenarios.length));
+      sandbox.createScenario(name, {
+        orders: state.orders, processes: state.processes, equipment: state.equipment,
+        shifts: state.shifts, materials: state.materials, routes: state.routes,
+        maintenanceWindows: state.maintenanceWindows, scheduled: state.scheduled,
+        alerts: state.alerts, risks: state.risks
+      });
+      closeModal('scenarioModal');
+      document.getElementById('scenarioName').value = '';
+      setStatus('方案 "' + name + '" 已创建');
+    });
+
+    document.getElementById('btnComputeAll').addEventListener('click', () => {
+      sandbox.computeAll();
+      setStatus('正在计算所有方案...');
+    });
+
+    document.getElementById('btnExportComparison').addEventListener('click', () => {
+      sandbox.exportComparisonCSV();
+      setStatus('对比报告已导出');
+    });
+
+    document.getElementById('btnApplyParams').addEventListener('click', () => {
+      if (sandbox._editingId) {
+        sandbox.computeOne(sandbox._editingId);
+        setStatus('正在重新计算方案...');
+      }
     });
   }
 
