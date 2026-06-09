@@ -18,6 +18,13 @@
     zoom: 5
   };
 
+  // ========== Scenario Manager ==========
+  const scenarioManager = new ScenarioManager();
+  let sandboxMode = false;
+  let scenarioCompareSet = new Set();  // scenario IDs selected for comparison
+  let scenarioCalcQueue = [];           // queue of scenario IDs to calculate
+  let scenarioCalcRunning = false;
+
   // ========== Web Worker ==========
   let worker = null;
   let currentRequestVersion = 0;
@@ -34,8 +41,8 @@
 
   function handleWorkerMessage(e) {
     const { action, data, requestVersion } = e.data;
-    // Discard stale responses: only accept results matching the latest request
-    if (requestVersion !== undefined && requestVersion !== currentRequestVersion) return;
+    // Discard stale answers for non-scenario actions
+    if (requestVersion !== undefined && requestVersion !== currentRequestVersion && action !== 'scenarioResult') return;
     switch (action) {
       case 'autoScheduleResult':
         state.scheduled = data.scheduled;
@@ -70,6 +77,9 @@
         } else {
           setStatus('拖拽调整完成');
         }
+        break;
+      case 'scenarioResult':
+        handleScenarioResult(data);
         break;
     }
   }
@@ -115,23 +125,35 @@
     }
   };
 
+  // ========== Get Active View Data ==========
+  // Returns the data to display (either baseline state or active scenario)
+  function getViewData() {
+    if (sandboxMode && scenarioManager.activeId) {
+      const sc = scenarioManager.getActiveScenario();
+      if (sc) return sc;
+    }
+    return state;
+  }
+
   // ========== Rendering ==========
   function renderGantt() {
+    const viewData = getViewData();
     gantt.viewMode = state.viewMode;
     gantt.zoom = state.zoom;
     gantt.render({
-      scheduled: state.scheduled,
-      maintenanceWindows: state.maintenanceWindows,
-      shifts: state.shifts,
-      orders: state.orders,
-      equipment: state.equipment
+      scheduled: viewData.scheduled || [],
+      maintenanceWindows: viewData.maintenanceWindows || [],
+      shifts: viewData.shifts || [],
+      orders: viewData.orders || [],
+      equipment: viewData.equipment || []
     });
-    document.getElementById('ganttEmpty').classList.toggle('hidden', state.scheduled.length > 0);
+    document.getElementById('ganttEmpty').classList.toggle('hidden', (viewData.scheduled || []).length > 0);
   }
 
   function renderAlerts() {
+    const viewData = getViewData();
     const list = document.getElementById('alertList');
-    const allAlerts = [...(state.risks || []), ...(state.alerts || [])];
+    const allAlerts = [...(viewData.risks || []), ...(viewData.alerts || [])];
     const count = allAlerts.length;
     document.getElementById('alertCount').textContent = count;
 
@@ -149,21 +171,35 @@
   }
 
   function renderStats() {
-    document.getElementById('statOrders').textContent = state.orders.length;
-    document.getElementById('statProcesses').textContent = state.processes.length;
-    document.getElementById('statEquipment').textContent = state.equipment.length;
-    document.getElementById('statShifts').textContent = state.shifts.length;
+    const viewData = getViewData();
+    document.getElementById('statOrders').textContent = (viewData.orders || []).length;
+    document.getElementById('statProcesses').textContent = (viewData.processes || []).length;
+    document.getElementById('statEquipment').textContent = (viewData.equipment || []).length;
+    document.getElementById('statShifts').textContent = (viewData.shifts || []).length;
   }
 
   function renderMaintenance() {
+    const viewData = getViewData();
     const list = document.getElementById('maintenanceList');
-    if (state.maintenanceWindows.length === 0) {
+    const mws = viewData.maintenanceWindows || [];
+    if (mws.length === 0) {
       list.innerHTML = '<p class="empty-hint">暂无维护计划</p>';
       return;
     }
-    list.innerHTML = state.maintenanceWindows.map(m =>
+    list.innerHTML = mws.map(m =>
       `<div class="maint-item">🔧 ${m.equipmentId}: ${new Date(m.start).toLocaleString('zh-CN')} ~ ${new Date(m.end).toLocaleString('zh-CN')} (${m.type})</div>`
     ).join('');
+  }
+
+  function renderScenarioBanner() {
+    const banner = document.getElementById('scenarioBanner');
+    if (sandboxMode && scenarioManager.activeId) {
+      const sc = scenarioManager.getActiveScenario();
+      banner.textContent = `🧪 当前查看：方案 "${sc ? sc.name : ''}" — 甘特图、告警、风险均已隔离`;
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
   }
 
   function onScheduleUpdated() {
@@ -171,8 +207,665 @@
     renderAlerts();
     renderStats();
     renderMaintenance();
+    renderScenarioBanner();
     // Run risk analysis
     sendToWorker('analyzeRisks', {});
+  }
+
+  // ========== Sandbox Mode ==========
+  function enterSandbox() {
+    if (sandboxMode) return;
+    sandboxMode = true;
+    document.body.classList.add('sandbox-mode');
+    document.getElementById('sandboxPanel').classList.remove('hidden');
+    document.getElementById('btnSandbox').classList.add('active');
+    document.getElementById('btnSandbox').textContent = '🧪 退出沙盘';
+
+    // Snapshot current state
+    scenarioManager.enterSandbox(state);
+    scenarioCompareSet.clear();
+    renderScenarioCards();
+    renderScenarioBanner();
+    setStatus('已进入 What-if 排产沙盘模式');
+  }
+
+  function exitSandbox() {
+    if (!sandboxMode) return;
+    // Restore baseline state
+    const baseline = scenarioManager.exitSandbox();
+    if (baseline) {
+      Object.assign(state, baseline);
+    }
+
+    sandboxMode = false;
+    scenarioManager.activeId = null;
+    document.body.classList.remove('sandbox-mode');
+    document.getElementById('sandboxPanel').classList.add('hidden');
+    document.getElementById('btnSandbox').classList.remove('active');
+    document.getElementById('btnSandbox').textContent = '🧪 沙盘';
+    scenarioCompareSet.clear();
+
+    // Re-render baseline
+    onScheduleUpdated();
+    setStatus('已退出沙盘模式，恢复主排产');
+  }
+
+  // ========== Scenario Card Rendering ==========
+  function renderScenarioCards() {
+    const container = document.getElementById('sandboxCards');
+    const scenarios = scenarioManager.getAllScenarios();
+    document.getElementById('scenarioCount').textContent = `${scenarios.length} 个方案`;
+
+    if (scenarios.length === 0) {
+      container.innerHTML = `
+        <div class="sandbox-empty" id="sandboxEmpty">
+          <p>📋 点击"新建方案"基于当前排产创建 What-if 方案</p>
+          <p class="hint">每个方案可独立调整班次、维护窗口、物料、插单等参数</p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = scenarios.map(sc => {
+      const isActive = scenarioManager.activeId === sc.id;
+      const isCompare = scenarioCompareSet.has(sc.id);
+      const statusDot = sc.status || 'pending';
+      const statusText = { pending: '待计算', calculating: '计算中...', ready: '已就绪', error: '出错' }[statusDot] || statusDot;
+      const m = sc.metrics;
+
+      return `
+        <div class="scenario-card ${isActive ? 'active' : ''} ${sc.status === 'calculating' ? 'calculating' : ''}"
+             data-id="${sc.id}" onclick="handleCardClick('${sc.id}')">
+          <div class="sc-card-header">
+            <span class="sc-card-name" title="${sc.name}">${sc.name}</span>
+            <div class="sc-card-actions">
+              <button class="sc-card-btn" title="调整参数" onclick="event.stopPropagation();openScenarioAdjust('${sc.id}')">⚙</button>
+              <button class="sc-card-btn" title="复制方案" onclick="event.stopPropagation();duplicateScenario('${sc.id}')">📋</button>
+              <button class="sc-card-btn" title="重算" onclick="event.stopPropagation();recalcScenario('${sc.id}')">🔄</button>
+              <button class="sc-card-btn" title="删除" onclick="event.stopPropagation();deleteScenario('${sc.id}')">🗑</button>
+            </div>
+          </div>
+          <div class="sc-card-metrics">
+            ${m ? `
+              <div class="sc-metric"><span class="sc-metric-label">完工时间</span><span class="sc-metric-value">${m.completionTimeStr || '-'}</span></div>
+              <div class="sc-metric"><span class="sc-metric-label">延期订单</span><span class="sc-metric-value ${m.delayedOrders > 0 ? 'bad' : 'good'}">${m.delayedOrders}</span></div>
+              <div class="sc-metric"><span class="sc-metric-label">设备利用</span><span class="sc-metric-value">${m.avgUtilization}%</span></div>
+              <div class="sc-metric"><span class="sc-metric-label">换线次数</span><span class="sc-metric-value ${m.totalChangeovers > 3 ? 'warn' : ''}">${m.totalChangeovers}</span></div>
+              <div class="sc-metric"><span class="sc-metric-label">班次超载</span><span class="sc-metric-value ${m.shiftOverloads > 0 ? 'warn' : ''}">${m.shiftOverloads}</span></div>
+              <div class="sc-metric"><span class="sc-metric-label">冲突数</span><span class="sc-metric-value ${m.conflictCount > 0 ? 'bad' : 'good'}">${m.conflictCount}</span></div>
+            ` : '<div style="grid-column:span 2;color:#818cf8;font-size:11px;text-align:center;padding:8px">点击"重算"计算排产</div>'}
+          </div>
+          <div class="sc-card-footer">
+            <div class="sc-status">
+              <span class="sc-status-dot ${statusDot}"></span>
+              <span>${statusText}</span>
+            </div>
+            <label class="sc-card-checkbox" onclick="event.stopPropagation()">
+              <input type="checkbox" ${isCompare ? 'checked' : ''} onchange="toggleCompare('${sc.id}', this.checked)">
+              对比
+            </label>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ========== Scenario Actions (exposed globally) ==========
+
+  window.handleCardClick = function(scenarioId) {
+    switchScenario(scenarioId);
+  };
+
+  window.toggleCompare = function(scenarioId, checked) {
+    if (checked) scenarioCompareSet.add(scenarioId);
+    else scenarioCompareSet.delete(scenarioId);
+  };
+
+  window.deleteScenario = function(scenarioId) {
+    if (!confirm('确定删除此方案？')) return;
+    scenarioManager.deleteScenario(scenarioId);
+    scenarioCompareSet.delete(scenarioId);
+    renderScenarioCards();
+    if (!scenarioManager.activeId) {
+      onScheduleUpdated();
+    }
+    setStatus('方案已删除');
+  };
+
+  window.duplicateScenario = function(scenarioId) {
+    const dup = scenarioManager.duplicateScenario(scenarioId);
+    if (dup) {
+      renderScenarioCards();
+      setStatus(`已复制方案：${dup.name}`);
+    }
+  };
+
+  window.recalcScenario = function(scenarioId) {
+    const sc = scenarioManager.getScenario(scenarioId);
+    if (!sc) return;
+    sc.status = 'calculating';
+    renderScenarioCards();
+    setStatus(`正在计算方案 "${sc.name}"...`);
+
+    // Send to worker
+    worker.postMessage({
+      action: 'scenarioCalculate',
+      data: {
+        scenarioId: sc.id,
+        scenarioData: {
+          orders: sc.orders,
+          processes: sc.processes,
+          equipment: sc.equipment,
+          shifts: sc.shifts,
+          materials: sc.materials,
+          routes: sc.routes,
+          maintenanceWindows: sc.maintenanceWindows
+        }
+      },
+      requestVersion: -1  // don't filter by version
+    });
+  };
+
+  function handleScenarioResult(data) {
+    const sc = scenarioManager.getScenario(data.scenarioId);
+    if (!sc) return;
+
+    if (data.error) {
+      sc.status = 'error';
+      sc.alerts = [{ type: 'critical', message: data.error }];
+    } else {
+      sc.scheduled = data.scheduled;
+      sc.alerts = data.alerts || [];
+      sc.risks = data.risks || [];
+      sc.status = 'ready';
+      sc.history.push(sc.scheduled);
+      // Compute metrics
+      scenarioManager.computeMetrics(sc);
+    }
+
+    renderScenarioCards();
+
+    // If this scenario is currently active, re-render views
+    if (scenarioManager.activeId === data.scenarioId) {
+      renderGantt();
+      renderAlerts();
+      renderStats();
+      renderMaintenance();
+    }
+
+    setStatus(data.error
+      ? `方案 "${sc.name}" 计算出错: ${data.error}`
+      : `方案 "${sc.name}" 计算完成：${(data.scheduled || []).length} 个工序`);
+
+    // Process queue
+    processScenarioQueue();
+  }
+
+  function processScenarioQueue() {
+    if (scenarioCalcQueue.length === 0) {
+      scenarioCalcRunning = false;
+      return;
+    }
+    scenarioCalcRunning = true;
+    const nextId = scenarioCalcQueue.shift();
+    window.recalcScenario(nextId);
+  }
+
+  function recalcAllScenarios() {
+    scenarioCalcQueue = scenarioManager.getAllScenarios()
+      .filter(sc => sc.status !== 'calculating')
+      .map(sc => sc.id);
+    if (scenarioCalcQueue.length > 0 && !scenarioCalcRunning) {
+      processScenarioQueue();
+    }
+  }
+
+  function switchScenario(scenarioId) {
+    if (scenarioManager.activeId === scenarioId) {
+      // Toggle off - back to baseline
+      scenarioManager.setActive(null);
+    } else {
+      scenarioManager.setActive(scenarioId);
+    }
+    renderScenarioCards();
+    renderScenarioBanner();
+    renderGantt();
+    renderAlerts();
+    renderStats();
+    renderMaintenance();
+
+    const sc = scenarioManager.getActiveScenario();
+    setStatus(sc ? `已切换到方案 "${sc.name}"` : '已切换回主排产');
+  }
+
+  // ========== Scenario Creation ==========
+  function createNewScenario() {
+    const count = scenarioManager.getAllScenarios().length;
+    const name = `方案 ${count + 1}`;
+    // Clone from the baseline state (current main state)
+    const sc = scenarioManager.createScenario(name, state);
+    renderScenarioCards();
+    setStatus(`已创建方案 "${name}"，点击 ⚙ 调整参数后重算`);
+    // Auto-open adjustment
+    openScenarioAdjust(sc.id);
+  }
+
+  // ========== Scenario Adjustment Modal ==========
+  let currentAdjustScenarioId = null;
+
+  window.openScenarioAdjust = function(scenarioId) {
+    const sc = scenarioManager.getScenario(scenarioId);
+    if (!sc) return;
+    currentAdjustScenarioId = scenarioId;
+
+    document.getElementById('scenarioAdjustTitle').textContent = `🔧 调整方案：${sc.name}`;
+
+    // Reset tabs
+    document.querySelectorAll('.adjust-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.adjust-panel').forEach(p => p.classList.add('hidden'));
+    document.querySelector('.adjust-tab[data-atab="shifts"]').classList.add('active');
+    document.getElementById('adjustPanelShifts').classList.remove('hidden');
+
+    // Populate adjustment panels
+    populateShiftAdjust(sc);
+    populateMaintAdjust(sc);
+    populateMaterialAdjust(sc);
+    populateLockAdjust(sc);
+    populatePriorityAdjust(sc);
+
+    openModal('scenarioAdjustModal');
+  };
+
+  function populateShiftAdjust(sc) {
+    const container = document.getElementById('adjustShiftsList');
+    container.innerHTML = (sc.shifts || []).map((s, i) => `
+      <div class="adjust-row" data-index="${i}">
+        <label>班次名称</label>
+        <input type="text" class="adj-shift-name" value="${s.name}">
+        <label>班组</label>
+        <input type="text" class="adj-shift-team" value="${s.team}">
+        <label>开始</label>
+        <input type="time" class="adj-shift-start" value="${s.startTime}">
+        <label>结束</label>
+        <input type="time" class="adj-shift-end" value="${s.endTime}">
+        <label>跨天</label>
+        <select class="adj-shift-cross">
+          <option value="false" ${!s.crossDay ? 'selected' : ''}>否</option>
+          <option value="true" ${s.crossDay ? 'selected' : ''}>是</option>
+        </select>
+        <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
+      </div>
+    `).join('');
+  }
+
+  function populateMaintAdjust(sc) {
+    const container = document.getElementById('adjustMaintList');
+    container.innerHTML = (sc.maintenanceWindows || []).map((m, i) => `
+      <div class="adjust-row" data-index="${i}">
+        <label>设备</label>
+        <input type="text" class="adj-maint-equip" value="${m.equipmentId}">
+        <label>开始</label>
+        <input type="datetime-local" class="adj-maint-start" value="${toLocalDatetime(m.start)}">
+        <label>结束</label>
+        <input type="datetime-local" class="adj-maint-end" value="${toLocalDatetime(m.end)}">
+        <label>类型</label>
+        <input type="text" class="adj-maint-type" value="${m.type}">
+        <button class="btn-remove" onclick="this.parentElement.remove()">×</button>
+      </div>
+    `).join('');
+  }
+
+  function populateMaterialAdjust(sc) {
+    const container = document.getElementById('adjustMaterialList');
+    container.innerHTML = (sc.materials || []).map((m, i) => `
+      <div class="adjust-row" data-index="${i}">
+        <label>${m.name}(${m.id})</label>
+        <span style="font-size:11px;color:#64748b;min-width:80px">订单: ${m.orderId}</span>
+        <label>到料时间</label>
+        <input type="datetime-local" class="adj-mat-time" value="${toLocalDatetime(m.arrivalTime)}" data-mat-id="${m.id}">
+        <label>数量</label>
+        <input type="number" class="adj-mat-qty" value="${m.quantity}" disabled style="width:60px">
+      </div>
+    `).join('');
+  }
+
+  function populateLockAdjust(sc) {
+    const container = document.getElementById('adjustLockList');
+    container.innerHTML = (sc.orders || []).map(o => `
+      <div class="lock-row">
+        <div class="order-info">
+          <span class="order-id">${o.id}</span>
+          <span class="order-product">${o.productType} × ${o.quantity}</span>
+        </div>
+        <button class="lock-toggle ${o.locked ? 'locked' : ''}"
+                data-order-id="${o.id}"
+                onclick="toggleLockInAdjust(this)">
+          ${o.locked ? '🔒 已锁定' : '🔓 未锁定'}
+        </button>
+      </div>
+    `).join('');
+  }
+
+  function populatePriorityAdjust(sc) {
+    const container = document.getElementById('adjustPriorityList');
+    container.innerHTML = (sc.orders || []).map(o => `
+      <div class="priority-row">
+        <div class="order-info">
+          <strong>${o.id}</strong> ${o.productType} × ${o.quantity}
+          ${o.deadline ? `<span style="color:#64748b">交期: ${o.deadline}</span>` : ''}
+        </div>
+        <input type="number" min="1" max="10" value="${o.priority}"
+               data-order-id="${o.id}" class="adj-priority-input">
+      </div>
+    `).join('');
+  }
+
+  window.toggleLockInAdjust = function(btn) {
+    const orderId = btn.dataset.orderId;
+    const isLocked = btn.classList.contains('locked');
+    btn.classList.toggle('locked');
+    btn.textContent = isLocked ? '🔓 未锁定' : '🔒 已锁定';
+  };
+
+  function toLocalDatetime(str) {
+    if (!str) return '';
+    // Convert "2026-06-15 08:00" or ISO to datetime-local format
+    return str.replace(' ', 'T').slice(0, 16);
+  }
+
+  function fromLocalDatetime(val) {
+    if (!val) return '';
+    return val.replace('T', ' ');
+  }
+
+  function collectAdjustments() {
+    const sc = scenarioManager.getScenario(currentAdjustScenarioId);
+    if (!sc) return [];
+
+    const mods = [];
+
+    // Shifts
+    const shiftRows = document.querySelectorAll('#adjustShiftsList .adjust-row');
+    const newShifts = [];
+    shiftRows.forEach(row => {
+      newShifts.push({
+        name: row.querySelector('.adj-shift-name').value,
+        team: row.querySelector('.adj-shift-team').value,
+        startTime: row.querySelector('.adj-shift-start').value,
+        endTime: row.querySelector('.adj-shift-end').value,
+        crossDay: row.querySelector('.adj-shift-cross').value === 'true'
+      });
+    });
+    if (JSON.stringify(newShifts) !== JSON.stringify(sc.shifts)) {
+      mods.push({ type: 'shift_change', shifts: newShifts, description: '调整班次' });
+    }
+
+    // Maintenance windows
+    const maintRows = document.querySelectorAll('#adjustMaintList .adjust-row');
+    const newMaint = [];
+    maintRows.forEach(row => {
+      newMaint.push({
+        equipmentId: row.querySelector('.adj-maint-equip').value,
+        start: fromLocalDatetime(row.querySelector('.adj-maint-start').value),
+        end: fromLocalDatetime(row.querySelector('.adj-maint-end').value),
+        type: row.querySelector('.adj-maint-type').value
+      });
+    });
+    if (JSON.stringify(newMaint) !== JSON.stringify(sc.maintenanceWindows)) {
+      mods.push({ type: 'maintenance_change', windows: newMaint, description: '调整维护窗口' });
+    }
+
+    // Materials
+    const matInputs = document.querySelectorAll('.adj-mat-time');
+    const matUpdates = [];
+    matInputs.forEach(input => {
+      const matId = input.dataset.matId;
+      const newTime = fromLocalDatetime(input.value);
+      const orig = sc.materials.find(m => m.id === matId);
+      if (orig && orig.arrivalTime !== newTime) {
+        matUpdates.push({ materialId: matId, newArrivalTime: newTime });
+      }
+    });
+    if (matUpdates.length > 0) {
+      mods.push({ type: 'material_batch_update', updates: matUpdates, description: `调整 ${matUpdates.length} 项物料到货时间` });
+    }
+
+    // Lock changes
+    const lockBtns = document.querySelectorAll('.lock-toggle');
+    lockBtns.forEach(btn => {
+      const orderId = btn.dataset.orderId;
+      const isLocked = btn.classList.contains('locked');
+      const orig = sc.orders.find(o => o.id === orderId);
+      if (orig && orig.locked !== isLocked) {
+        mods.push({ type: 'lock_order', orderId, locked: isLocked, description: `${isLocked ? '锁定' : '解锁'}订单 ${orderId}` });
+      }
+    });
+
+    // Priority changes
+    const prioInputs = document.querySelectorAll('.adj-priority-input');
+    const prioChanges = [];
+    prioInputs.forEach(input => {
+      const orderId = input.dataset.orderId;
+      const newPrio = parseInt(input.value);
+      const orig = sc.orders.find(o => o.id === orderId);
+      if (orig && orig.priority !== newPrio) {
+        prioChanges.push({ orderId, priority: newPrio });
+      }
+    });
+    if (prioChanges.length > 0) {
+      mods.push({ type: 'priority_batch', changes: prioChanges, description: `调整 ${prioChanges.length} 个订单优先级` });
+    }
+
+    return mods;
+  }
+
+  function applyAdjustments() {
+    if (!currentAdjustScenarioId) return;
+    const mods = collectAdjustments();
+    const sc = scenarioManager.getScenario(currentAdjustScenarioId);
+    if (!sc) return;
+
+    for (const mod of mods) {
+      scenarioManager.applyModification(currentAdjustScenarioId, mod);
+    }
+
+    // Update maintenance windows from full override if present
+    const maintMod = mods.find(m => m.type === 'maintenance_change');
+    if (maintMod) {
+      sc.maintenanceWindows = deepClone(maintMod.windows);
+    }
+
+    closeModal('scenarioAdjustModal');
+    renderScenarioCards();
+
+    if (mods.length > 0) {
+      setStatus(`方案 "${sc.name}" 已应用 ${mods.length} 项调整，正在重算...`);
+      // Auto recalculate
+      window.recalcScenario(currentAdjustScenarioId);
+    } else {
+      setStatus(`方案 "${sc.name}" 无变更`);
+    }
+  }
+
+  // Handle inserted order in scenario adjust
+  function handleScenarioInsertOrder() {
+    const sc = scenarioManager.getScenario(currentAdjustScenarioId);
+    if (!sc) return;
+
+    const newOrder = {
+      id: document.getElementById('scInsertOrderId').value || 'URGENT-' + Date.now(),
+      productType: document.getElementById('scInsertProduct').value || '紧急产品',
+      quantity: parseInt(document.getElementById('scInsertQty').value) || 10,
+      deadline: fromLocalDatetime(document.getElementById('scInsertDeadline').value) || new Date(Date.now() + 86400000 * 3).toISOString().slice(0, 16),
+      priority: parseInt(document.getElementById('scInsertPriority').value) || 5,
+      locked: false
+    };
+
+    // Create basic processes
+    const newProcesses = [];
+    if (sc.equipment.length > 0) {
+      const eq = sc.equipment[0];
+      newProcesses.push({
+        id: `INS-${newOrder.id}-P1`,
+        name: '紧急加工',
+        equipmentId: eq.id,
+        duration: 120,
+        dependencies: [],
+        orderId: newOrder.id
+      });
+    }
+
+    scenarioManager.applyModification(currentAdjustScenarioId, {
+      type: 'insert_order',
+      order: newOrder,
+      processes: newProcesses,
+      description: `插单 ${newOrder.id}(${newOrder.productType})`
+    });
+
+    setStatus(`已添加插单 "${newOrder.id}"，点击"应用并重算"提交所有调整`);
+
+    // Clear the form
+    document.getElementById('scInsertOrderId').value = '';
+    document.getElementById('scInsertProduct').value = '';
+    document.getElementById('scInsertQty').value = '10';
+  }
+
+  // ========== Comparison ==========
+  function showComparison() {
+    const selectedIds = Array.from(scenarioCompareSet);
+    if (selectedIds.length < 2) {
+      alert('请至少选择2个方案进行对比（勾选方案卡片底部的"对比"复选框）');
+      return;
+    }
+
+    // Build comparison checkboxes
+    const selectContainer = document.getElementById('compareSelect');
+    const allScenarios = scenarioManager.getAllScenarios();
+    selectContainer.innerHTML = allScenarios.map(sc => `
+      <label>
+        <input type="checkbox" value="${sc.id}" ${selectedIds.includes(sc.id) ? 'checked' : ''}
+               onchange="updateCompareSet('${sc.id}', this.checked)">
+        ${sc.name}
+      </label>
+    `).join('');
+
+    renderComparisonTable(selectedIds);
+    openModal('compareModal');
+  }
+
+  window.updateCompareSet = function(id, checked) {
+    if (checked) scenarioCompareSet.add(id);
+    else scenarioCompareSet.delete(id);
+    renderComparisonTable(Array.from(scenarioCompareSet));
+  };
+
+  function renderComparisonTable(scenarioIds) {
+    const scenarios = scenarioIds.map(id => scenarioManager.getScenario(id)).filter(Boolean);
+    if (scenarios.length === 0) return;
+
+    const head = document.getElementById('compareHead');
+    const body = document.getElementById('compareBody');
+
+    // Header row
+    head.innerHTML = `<tr>
+      <th>指标</th>
+      ${scenarios.map(sc => `<th>${sc.name}</th>`).join('')}
+    </tr>`;
+
+    // Get comparison data
+    const comparison = scenarioManager.compare(scenarioIds);
+
+    // Metric rows
+    const metrics = [
+      { key: 'completionTimeStr', label: '总完工时间', numericKey: 'totalCompletionTime' },
+      { key: 'delayedOrders', label: '延期订单数' },
+      { key: 'avgUtilization', label: '平均设备利用率(%)' },
+      { key: 'totalChangeovers', label: '换线次数' },
+      { key: 'shiftOverloads', label: '班次超负荷数' },
+      { key: 'conflictCount', label: '冲突数量' },
+      { key: 'totalAlerts', label: '告警总数' },
+      { key: 'totalRisks', label: '风险总数' },
+      { key: 'scheduledCount', label: '排产工序数' }
+    ];
+
+    let rows = metrics.map(m => {
+      const values = scenarios.map(sc => {
+        const val = sc.metrics ? sc.metrics[m.key] : '-';
+        return val !== undefined && val !== null ? val : '-';
+      });
+
+      // Highlight best/worst for numeric metrics
+      const numKey = m.numericKey || m.key;
+      const diff = comparison && comparison.diffs[numKey];
+      const highlighted = values.map((v, i) => {
+        if (!diff || typeof v !== 'number') return `<td>${v}</td>`;
+        const isLowerBetter = diff.isLowerBetter;
+        if (v === diff.best && diff.best !== diff.worst) {
+          return `<td class="${isLowerBetter ? 'diff-better' : 'diff-worse'}" style="background:rgba(52,211,153,0.1)">${v}</td>`;
+        }
+        if (v === diff.worst && diff.best !== diff.worst) {
+          return `<td class="${isLowerBetter ? 'diff-worse' : 'diff-better'}" style="background:rgba(248,113,113,0.1)">${v}</td>`;
+        }
+        return `<td>${v}</td>`;
+      });
+
+      return `<tr><td class="row-label">${m.label}</td>${highlighted.join('')}</tr>`;
+    });
+
+    // Equipment utilization detail row
+    const equipUtilRow = scenarios.map(sc => {
+      const util = sc.metrics ? sc.metrics.equipUtilization : {};
+      if (!util || Object.keys(util).length === 0) return '<td>-</td>';
+      return `<td style="font-size:10px;text-align:left">${Object.entries(util).map(([k, v]) => `${k}: ${v}%`).join('<br>')}</td>`;
+    });
+    rows.push(`<tr><td class="row-label">各设备利用率</td>${equipUtilRow.join('')}</tr>`);
+
+    // Shift load detail row
+    const shiftLoadRow = scenarios.map(sc => {
+      const load = sc.metrics ? sc.metrics.shiftLoad : {};
+      if (!load || Object.keys(load).length === 0) return '<td>-</td>';
+      return `<td style="font-size:10px;text-align:left">${Object.entries(load).map(([k, v]) => `${k}: ${v}%`).join('<br>')}</td>`;
+    });
+    rows.push(`<tr><td class="row-label">各班次负荷</td>${shiftLoadRow.join('')}</tr>`);
+
+    // Delayed orders detail
+    const delayDetailRow = scenarios.map(sc => {
+      const delays = sc.metrics ? sc.metrics.orderDelays : [];
+      if (!delays || delays.length === 0) return '<td style="color:#34d399">✅ 无延期</td>';
+      return `<td style="font-size:10px;text-align:left;color:#f87171">${delays.map(d => `${d.orderId}: 超${d.delayHours}h`).join('<br>')}</td>`;
+    });
+    rows.push(`<tr><td class="row-label">延期详情</td>${delayDetailRow.join('')}</tr>`);
+
+    // Modifications row
+    const modsRow = scenarios.map(sc => {
+      const mods = sc.modifications || [];
+      if (mods.length === 0) return '<td style="color:#94a3b8">无调整</td>';
+      return `<td><div class="compare-mods">${mods.map(m => `<span class="compare-mod-tag">${m.description}</span>`).join('')}</div></td>`;
+    });
+    rows.push(`<tr><td class="row-label">调整项</td>${modsRow.join('')}</tr>`);
+
+    body.innerHTML = rows.join('');
+  }
+
+  // ========== Rollback ==========
+  function rollbackToScenario() {
+    const selectedIds = Array.from(scenarioCompareSet);
+    if (selectedIds.length !== 1) {
+      alert('请选择恰好一个方案进行回滚（在对比面板中只勾选一个方案）');
+      return;
+    }
+    const scId = selectedIds[0];
+    const sc = scenarioManager.getScenario(scId);
+    if (!sc) return;
+
+    if (!confirm(`确定要将方案 "${sc.name}" 应用为主排产吗？\n当前主排产数据将被替换。`)) return;
+
+    const rollbackData = scenarioManager.rollbackToScenario(scId);
+    if (rollbackData) {
+      Object.assign(state, rollbackData);
+      history.push(state.scheduled);
+      closeModal('compareModal');
+      onScheduleUpdated();
+      setStatus(`已回滚到方案 "${sc.name}"`);
+    }
   }
 
   // ========== Event Bindings ==========
@@ -215,6 +908,19 @@
 
     // Undo/Redo
     document.getElementById('btnUndo').addEventListener('click', () => {
+      // If viewing a scenario, undo within that scenario
+      if (sandboxMode && scenarioManager.activeId) {
+        const sc = scenarioManager.getActiveScenario();
+        if (sc) {
+          const prev = sc.history.undo();
+          if (prev) {
+            sc.scheduled = prev;
+            renderGantt();
+            setStatus('方案内已撤销');
+          }
+        }
+        return;
+      }
       const prev = history.undo();
       if (prev) {
         state.scheduled = prev;
@@ -223,6 +929,18 @@
       }
     });
     document.getElementById('btnRedo').addEventListener('click', () => {
+      if (sandboxMode && scenarioManager.activeId) {
+        const sc = scenarioManager.getActiveScenario();
+        if (sc) {
+          const next = sc.history.redo();
+          if (next) {
+            sc.scheduled = next;
+            renderGantt();
+            setStatus('方案内已重做');
+          }
+        }
+        return;
+      }
       const next = history.redo();
       if (next) {
         state.scheduled = next;
@@ -261,6 +979,118 @@
     // Insert order
     document.getElementById('btnInsertOrder').addEventListener('click', () => openModal('insertModal'));
     document.getElementById('btnDoInsert').addEventListener('click', doInsertOrder);
+
+    // ===== Sandbox / Scenario Events =====
+
+    // Sandbox toggle
+    document.getElementById('btnSandbox').addEventListener('click', () => {
+      if (sandboxMode) {
+        if (confirm('退出沙盘将丢弃所有 What-if 方案，确定退出？')) {
+          exitSandbox();
+        }
+      } else {
+        enterSandbox();
+      }
+    });
+
+    // Add scenario
+    document.getElementById('btnAddScenario').addEventListener('click', createNewScenario);
+
+    // Compare scenarios
+    document.getElementById('btnCompareScenarios').addEventListener('click', showComparison);
+
+    // Export comparison
+    document.getElementById('btnExportComparison').addEventListener('click', () => {
+      const selectedIds = Array.from(scenarioCompareSet);
+      if (selectedIds.length < 2) {
+        alert('请至少选择2个方案导出对比报告');
+        return;
+      }
+      const scenarios = selectedIds.map(id => scenarioManager.getScenario(id)).filter(Boolean);
+      Exporter.exportComparisonReport(scenarios, scenarioManager.compare(selectedIds));
+      setStatus('对比报告已导出');
+    });
+
+    // Exit sandbox
+    document.getElementById('btnExitSandbox').addEventListener('click', () => {
+      if (confirm('退出沙盘将丢弃所有 What-if 方案，确定退出？')) {
+        exitSandbox();
+      }
+    });
+
+    // Adjustment modal tabs
+    document.querySelectorAll('.adjust-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.adjust-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.adjust-panel').forEach(p => p.classList.add('hidden'));
+        tab.classList.add('active');
+        const panelMap = {
+          shifts: 'adjustPanelShifts',
+          maintenance: 'adjustPanelMaintenance',
+          materials: 'adjustPanelMaterials',
+          insertOrder: 'adjustPanelInsertOrder',
+          lockOrder: 'adjustPanelLockOrder',
+          priority: 'adjustPanelPriority'
+        };
+        const panelId = panelMap[tab.dataset.atab];
+        if (panelId) document.getElementById(panelId).classList.remove('hidden');
+      });
+    });
+
+    // Apply adjustments
+    document.getElementById('btnApplyAdjust').addEventListener('click', applyAdjustments);
+
+    // Scenario insert order
+    document.getElementById('btnScDoInsert').addEventListener('click', handleScenarioInsertOrder);
+
+    // Add shift button
+    document.getElementById('btnAddShift').addEventListener('click', () => {
+      const container = document.getElementById('adjustShiftsList');
+      const idx = container.children.length;
+      const div = document.createElement('div');
+      div.className = 'adjust-row';
+      div.dataset.index = idx;
+      div.innerHTML = `
+        <label>班次名称</label>
+        <input type="text" class="adj-shift-name" value="新班次">
+        <label>班组</label>
+        <input type="text" class="adj-shift-team" value="新班组">
+        <label>开始</label>
+        <input type="time" class="adj-shift-start" value="08:00">
+        <label>结束</label>
+        <input type="time" class="adj-shift-end" value="16:00">
+        <label>跨天</label>
+        <select class="adj-shift-cross">
+          <option value="false" selected>否</option>
+          <option value="true">是</option>
+        </select>
+        <button class="btn-remove" onclick="this.parentElement.remove()">×</button>`;
+      container.appendChild(div);
+    });
+
+    // Add maintenance button
+    document.getElementById('btnAddMaint').addEventListener('click', () => {
+      const container = document.getElementById('adjustMaintList');
+      const idx = container.children.length;
+      const tomorrow = new Date(Date.now() + 86400000);
+      const div = document.createElement('div');
+      div.className = 'adjust-row';
+      div.dataset.index = idx;
+      div.innerHTML = `
+        <label>设备</label>
+        <input type="text" class="adj-maint-equip" value="${(state.equipment[0] || {}).id || 'EQ01'}">
+        <label>开始</label>
+        <input type="datetime-local" class="adj-maint-start" value="${tomorrow.toISOString().slice(0, 16)}">
+        <label>结束</label>
+        <input type="datetime-local" class="adj-maint-end" value="${new Date(tomorrow.getTime() + 3600000 * 4).toISOString().slice(0, 16)}">
+        <label>类型</label>
+        <input type="text" class="adj-maint-type" value="维护">
+        <button class="btn-remove" onclick="this.parentElement.remove()">×</button>`;
+      container.appendChild(div);
+    });
+
+    // Rollback
+    document.getElementById('btnRollbackScenario').addEventListener('click', rollbackToScenario);
 
     // Close modals
     document.querySelectorAll('.modal-close').forEach(btn => {
@@ -468,10 +1298,11 @@
 
   // ========== Process Detail ==========
   function showProcessDetail(task) {
-    const order = state.orders.find(o => o.id === task.orderId) || {};
-    const equip = state.equipment.find(e => e.id === task.equipmentId) || {};
+    const viewData = getViewData();
+    const order = (viewData.orders || []).find(o => o.id === task.orderId) || {};
+    const equip = (viewData.equipment || []).find(e => e.id === task.equipmentId) || {};
     const deps = (task.dependencies || []).map(d => {
-      const depTask = state.processes.find(p => p.id === d);
+      const depTask = (viewData.processes || []).find(p => p.id === d);
       return depTask ? `${depTask.name || d}` : d;
     }).join(', ') || '无';
 
@@ -522,6 +1353,11 @@
 
   function updateTime() {
     document.getElementById('statusTime').textContent = new Date().toLocaleString('zh-CN');
+  }
+
+  // ========== Utility ==========
+  function deepClone(obj) {
+    return JSON.parse(JSON.stringify(obj));
   }
 
   // ========== Sample Data ==========

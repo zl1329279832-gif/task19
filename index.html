@@ -36,8 +36,34 @@
       </div>
       <button id="btnAutoSchedule" class="btn btn-success" title="自动排产">🔄 自动排产</button>
       <button id="btnInsertOrder" class="btn btn-warning" title="插单">⚡ 插单</button>
+      <button id="btnSandbox" class="btn btn-sandbox" title="多方案 What-if 排产沙盘">🧪 沙盘</button>
     </div>
   </header>
+
+  <!-- Scenario Sandbox Panel -->
+  <div class="sandbox-panel hidden" id="sandboxPanel">
+    <div class="sandbox-header">
+      <div class="sandbox-title">
+        <span class="sandbox-icon">🧪</span>
+        <span>多方案 What-if 排产沙盘</span>
+        <span class="sandbox-badge" id="scenarioCount">0 个方案</span>
+      </div>
+      <div class="sandbox-actions">
+        <button class="btn btn-primary btn-sm" id="btnAddScenario" title="基于当前排产创建新方案">➕ 新建方案</button>
+        <button class="btn btn-sm" id="btnCompareScenarios" title="并排对比选中方案">📊 对比方案</button>
+        <button class="btn btn-sm" id="btnExportComparison" title="导出对比报告">📋 导出报告</button>
+        <button class="btn btn-sm btn-danger" id="btnExitSandbox" title="退出沙盘模式">✕ 退出沙盘</button>
+      </div>
+    </div>
+    <div class="sandbox-cards" id="sandboxCards">
+      <div class="sandbox-empty" id="sandboxEmpty">
+        <p>📋 点击"新建方案"基于当前排产创建 What-if 方案</p>
+        <p class="hint">每个方案可独立调整班次、维护窗口、物料、插单等参数</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="scenario-banner" id="scenarioBanner"></div>
 
   <div class="main-container">
     <aside class="sidebar" id="sidebar">
@@ -188,6 +214,116 @@
     </div>
   </div>
 
+  <!-- Scenario Adjustment Modal -->
+  <div class="modal" id="scenarioAdjustModal">
+    <div class="modal-content modal-lg">
+      <div class="modal-header">
+        <h2 id="scenarioAdjustTitle">🔧 调整方案参数</h2>
+        <button class="modal-close" data-close="scenarioAdjustModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="adjust-tabs">
+          <button class="adjust-tab active" data-atab="shifts">班次调整</button>
+          <button class="adjust-tab" data-atab="maintenance">维护窗口</button>
+          <button class="adjust-tab" data-atab="materials">物料到货</button>
+          <button class="adjust-tab" data-atab="insertOrder">紧急插单</button>
+          <button class="adjust-tab" data-atab="lockOrder">锁定订单</button>
+          <button class="adjust-tab" data-atab="priority">优先级</button>
+        </div>
+
+        <!-- Shift Adjustment -->
+        <div class="adjust-panel" id="adjustPanelShifts">
+          <p class="hint">修改班次设置，影响排产时间窗口</p>
+          <div id="adjustShiftsList"></div>
+          <button class="btn btn-sm" id="btnAddShift" style="margin-top:8px">➕ 添加班次</button>
+        </div>
+
+        <!-- Maintenance Window Adjustment -->
+        <div class="adjust-panel hidden" id="adjustPanelMaintenance">
+          <p class="hint">添加或修改设备维护窗口</p>
+          <div id="adjustMaintList"></div>
+          <button class="btn btn-sm" id="btnAddMaint" style="margin-top:8px">➕ 添加维护窗口</button>
+        </div>
+
+        <!-- Material Arrival Time -->
+        <div class="adjust-panel hidden" id="adjustPanelMaterials">
+          <p class="hint">修改物料预计到料时间</p>
+          <div id="adjustMaterialList"></div>
+        </div>
+
+        <!-- Insert Order -->
+        <div class="adjust-panel hidden" id="adjustPanelInsertOrder">
+          <p class="hint">向方案中插入紧急订单</p>
+          <div class="form-group">
+            <label>订单编号</label>
+            <input type="text" id="scInsertOrderId" placeholder="URGENT-001">
+          </div>
+          <div class="form-group">
+            <label>产品名称</label>
+            <input type="text" id="scInsertProduct" placeholder="紧急产品">
+          </div>
+          <div class="form-group">
+            <label>数量</label>
+            <input type="number" id="scInsertQty" value="10">
+          </div>
+          <div class="form-group">
+            <label>交期</label>
+            <input type="datetime-local" id="scInsertDeadline">
+          </div>
+          <div class="form-group">
+            <label>优先级</label>
+            <select id="scInsertPriority">
+              <option value="5">5 - 最高(紧急)</option>
+              <option value="4">4 - 高</option>
+              <option value="3">3 - 中</option>
+            </select>
+          </div>
+          <button class="btn btn-warning" id="btnScDoInsert">⚡ 添加插单</button>
+        </div>
+
+        <!-- Lock Order -->
+        <div class="adjust-panel hidden" id="adjustPanelLockOrder">
+          <p class="hint">锁定/解锁订单，锁定后排产位置不变</p>
+          <div id="adjustLockList"></div>
+        </div>
+
+        <!-- Priority Adjustment -->
+        <div class="adjust-panel hidden" id="adjustPanelPriority">
+          <p class="hint">调整订单优先级 (1-10, 数值越大越优先)</p>
+          <div id="adjustPriorityList"></div>
+        </div>
+
+        <div class="adjust-footer" style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" onclick="document.querySelector('[data-close=scenarioAdjustModal]').click()">取消</button>
+          <button class="btn btn-primary" id="btnApplyAdjust">✅ 应用并重算</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scenario Comparison Modal -->
+  <div class="modal" id="compareModal">
+    <div class="modal-content modal-xl">
+      <div class="modal-header">
+        <h2>📊 方案对比报告</h2>
+        <button class="modal-close" data-close="compareModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="compare-select" id="compareSelect"></div>
+        <div class="compare-table-wrap">
+          <table class="compare-table" id="compareTable">
+            <thead id="compareHead"></thead>
+            <tbody id="compareBody"></tbody>
+          </table>
+        </div>
+        <div class="compare-actions" style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" id="btnRollbackScenario" title="将选中方案应用为主排产">🔄 回滚到此方案</button>
+          <button class="btn" onclick="document.querySelector('[data-close=compareModal]').click()">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="status-bar">
     <span id="statusText">就绪</span>
     <span id="statusTime"></span>
@@ -196,6 +332,7 @@
   <script src="js/history.js"></script>
   <script src="js/importer.js"></script>
   <script src="js/exporter.js"></script>
+  <script src="js/scenario.js"></script>
   <script src="js/gantt.js"></script>
   <script src="js/app.js"></script>
 </body>

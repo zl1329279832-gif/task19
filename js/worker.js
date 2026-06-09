@@ -25,6 +25,10 @@ self.onmessage = function(e) {
       result = recalcAfterDrag(data);
       self.postMessage({ action: 'recalcResult', data: result, requestVersion });
       break;
+    case 'scenarioCalculate':
+      result = calculateScenario(data);
+      self.postMessage({ action: 'scenarioResult', data: result, requestVersion });
+      break;
   }
 };
 
@@ -631,4 +635,46 @@ function recalcAfterDrag(data) {
   alerts.push(...shiftLoad);
 
   return { updated, alerts, cascadeUpdates };
+}
+
+// ========== Scenario Calculation ==========
+function calculateScenario(data) {
+  const { scenarioId, scenarioData } = data;
+  try {
+    // Run auto-schedule on the scenario's data
+    const schedResult = autoSchedule({
+      orders: scenarioData.orders,
+      processes: scenarioData.processes,
+      equipment: scenarioData.equipment,
+      shifts: scenarioData.shifts,
+      materials: scenarioData.materials,
+      routes: scenarioData.routes,
+      maintenanceWindows: scenarioData.maintenanceWindows
+    });
+
+    // Run risk analysis on the scheduled result
+    const risks = analyzeRisks({
+      scheduled: schedResult.scheduled,
+      orders: scenarioData.orders,
+      materials: scenarioData.materials,
+      maintenanceWindows: scenarioData.maintenanceWindows,
+      shifts: scenarioData.shifts
+    });
+
+    return {
+      scenarioId,
+      scheduled: schedResult.scheduled,
+      alerts: schedResult.alerts,
+      risks,
+      error: null
+    };
+  } catch (e) {
+    return {
+      scenarioId,
+      scheduled: [],
+      alerts: [],
+      risks: [],
+      error: e.message || '计算出错'
+    };
+  }
 }
