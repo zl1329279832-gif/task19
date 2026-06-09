@@ -20,6 +20,7 @@
 
   // ========== Web Worker ==========
   let worker = null;
+  let _workerVersion = 0;
 
   function initWorker() {
     if (worker) worker.terminate();
@@ -32,7 +33,9 @@
   }
 
   function handleWorkerMessage(e) {
-    const { action, data } = e.data;
+    const { action, data, _version } = e.data;
+    // Discard stale worker results — only accept current version
+    if (_version !== undefined && _version !== _workerVersion) return;
     switch (action) {
       case 'autoScheduleResult':
         state.scheduled = data.scheduled;
@@ -72,9 +75,10 @@
   }
 
   function sendToWorker(action, extraData) {
+    _workerVersion++;
     worker.postMessage({
       action,
-      data: { ...state, ...extraData }
+      data: { ...state, ...extraData, _version: _workerVersion }
     });
   }
 

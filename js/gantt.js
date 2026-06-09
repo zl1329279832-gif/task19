@@ -137,15 +137,24 @@ class GanttChart {
           const sd = new Date(taskStart);
           const [sh, sm] = shift.startTime.split(':').map(Number);
           const [eh, em] = shift.endTime.split(':').map(Number);
-          let ss, se;
+          let matched = false;
           if (shift.crossDay) {
-            ss = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), sh, sm).getTime();
-            se = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate() + 1, eh, em).getTime();
+            // Check current day's cross-day shift (e.g. today 22:00 ~ tomorrow 06:00)
+            let ss = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), sh, sm).getTime();
+            let se = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate() + 1, eh, em).getTime();
+            if (taskStart >= ss && taskStart < se) matched = true;
+            // Check previous day's cross-day shift (e.g. yesterday 22:00 ~ today 06:00)
+            if (!matched) {
+              ss = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate() - 1, sh, sm).getTime();
+              se = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), eh, em).getTime();
+              if (taskStart >= ss && taskStart < se) matched = true;
+            }
           } else {
-            ss = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), sh, sm).getTime();
-            se = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), eh, em).getTime();
+            const ss = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), sh, sm).getTime();
+            const se = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate(), eh, em).getTime();
+            if (taskStart >= ss && taskStart < se) matched = true;
           }
-          if (taskStart >= ss && taskStart < se) {
+          if (matched) {
             teamKey = `${shift.team} (${shift.name})`;
             break;
           }
@@ -332,9 +341,20 @@ class GanttChart {
     for (const mw of this.maintenanceWindows) {
       const mwStart = new Date(mw.start).getTime();
       const mwEnd = new Date(mw.end).getTime();
-      // Find row for this equipment
-      const rowIdx = this.rows.findIndex(r => r.id === mw.equipmentId);
-      if (rowIdx >= 0) {
+      // Find affected rows based on view mode
+      const affectedRows = [];
+      if (this.viewMode === 'equipment') {
+        const idx = this.rows.findIndex(r => r.id === mw.equipmentId);
+        if (idx >= 0) affectedRows.push(idx);
+      } else {
+        // In order/team view, show maintenance on rows containing tasks that use this equipment
+        for (let ri = 0; ri < this.rows.length; ri++) {
+          if (this.rows[ri].tasks.some(t => t.equipmentId === mw.equipmentId)) {
+            affectedRows.push(ri);
+          }
+        }
+      }
+      for (const rowIdx of affectedRows) {
         const x1 = Math.max(this.timeToX(mwStart), this.labelWidth);
         const x2 = Math.min(this.timeToX(mwEnd), w);
         if (x2 > this.labelWidth) {

@@ -3,21 +3,22 @@
 
 self.onmessage = function(e) {
   const { action, data } = e.data;
+  const _version = data && data._version;
   switch (action) {
     case 'autoSchedule':
-      self.postMessage({ action: 'autoScheduleResult', data: autoSchedule(data) });
+      self.postMessage({ action: 'autoScheduleResult', data: autoSchedule(data), _version });
       break;
     case 'detectConflicts':
-      self.postMessage({ action: 'conflictResult', data: detectConflicts(data) });
+      self.postMessage({ action: 'conflictResult', data: detectConflicts(data), _version });
       break;
     case 'analyzeRisks':
-      self.postMessage({ action: 'riskResult', data: analyzeRisks(data) });
+      self.postMessage({ action: 'riskResult', data: analyzeRisks(data), _version });
       break;
     case 'insertOrder':
-      self.postMessage({ action: 'insertResult', data: insertOrder(data) });
+      self.postMessage({ action: 'insertResult', data: insertOrder(data), _version });
       break;
     case 'recalcAfterDrag':
-      self.postMessage({ action: 'recalcResult', data: recalcAfterDrag(data) });
+      self.postMessage({ action: 'recalcResult', data: recalcAfterDrag(data), _version });
       break;
   }
 };
@@ -167,7 +168,7 @@ function topoSort(processes) {
 
 // ========== Auto Schedule ==========
 function autoSchedule(data) {
-  const { orders, processes, equipment, shifts, materials, routes, maintenanceWindows } = data;
+  const { orders, processes, equipment, shifts, materials, routes, maintenanceWindows, existingScheduled } = data;
   if (!orders || orders.length === 0) return { scheduled: [], alerts: [] };
 
   const alerts = [];
@@ -196,11 +197,15 @@ function autoSchedule(data) {
   for (const order of sortedOrders) {
     if (order.locked) {
       // Check if locked order already has scheduled processes
-      const existingProcs = (processes || []).filter(p => p.orderId === order.id && p.scheduledStart && p.scheduledEnd);
+      // First check existingScheduled (from insertOrder), then fall back to processes
+      let existingProcs = (existingScheduled || []).filter(p => p.orderId === order.id && p.scheduledStart && p.scheduledEnd);
+      if (existingProcs.length === 0) {
+        existingProcs = (processes || []).filter(p => p.orderId === order.id && p.scheduledStart && p.scheduledEnd);
+      }
       if (existingProcs.length > 0) {
         // Locked orders keep their existing schedule
         for (const p of existingProcs) {
-          scheduled.push({ ...p });
+          scheduled.push({ ...p, locked: true });
           // Update equipment timeline
           if (p.scheduledEnd) {
             const current = equipTimeline.get(p.equipmentId) || 0;
@@ -489,7 +494,8 @@ function insertOrder(data) {
     shifts,
     materials,
     routes,
-    maintenanceWindows
+    maintenanceWindows,
+    existingScheduled: scheduled // pass existing schedule so locked orders keep their positions
   });
 
   // Mark the new order's processes
@@ -575,29 +581,39 @@ function recalcAfterDrag(data) {
     }
   }
 
-  // Check dependency: if moved process has dependents, they may need to shift
-  const dependents = updated.filter(s =>
-    s.dependencies && s.dependencies.includes(movedProcess.id) && s.orderId === movedProcess.orderId
-  );
+  // Recursive dependency cascade: shift all downstream dependents
   const cascadeUpdates = [];
-  for (const dep of dependents) {
-    if (dep.scheduledStart < movedProcess.scheduledEnd) {
-      const shift = movedProcess.scheduledEnd - dep.scheduledStart;
-      cascadeUpdates.push({
-        id: dep.id,
-        scheduledStart: dep.scheduledStart + shift,
-        scheduledEnd: dep.scheduledEnd + shift
-      });
+  const cascadeVisited = new Set();
+
+  function cascadeFrom(srcId, srcEnd, srcOrderId) {
+    if (cascadeVisited.has(srcId)) return;
+    cascadeVisited.add(srcId);
+
+    const dependents = updated.filter(s =>
+      s.dependencies && s.dependencies.includes(srcId) && s.orderId === srcOrderId
+    );
+    for (const dep of dependents) {
+      // Skip locked processes
+      if (dep.locked) continue;
+      const depOrder = (orders || []).find(o => o.id === dep.orderId);
+      if (depOrder && depOrder.locked) continue;
+
+      if (dep.scheduledStart < srcEnd) {
+        const shift = srcEnd - dep.scheduledStart;
+        dep.scheduledStart += shift;
+        dep.scheduledEnd += shift;
+        cascadeUpdates.push({
+          id: dep.id,
+          scheduledStart: dep.scheduledStart,
+          scheduledEnd: dep.scheduledEnd
+        });
+        // Recurse into this dependent's own dependents
+        cascadeFrom(dep.id, dep.scheduledEnd, dep.orderId);
+      }
     }
   }
 
-  // Apply cascade updates
-  for (const cu of cascadeUpdates) {
-    const idx = updated.findIndex(s => s.id === cu.id);
-    if (idx >= 0) {
-      updated[idx] = { ...updated[idx], ...cu };
-    }
-  }
+  cascadeFrom(movedProcess.id, movedProcess.scheduledEnd, movedProcess.orderId);
 
   // Re-run full conflict detection
   const fullConflicts = detectConflicts({ scheduled: updated, shifts, maintenanceWindows, materials, orders });
