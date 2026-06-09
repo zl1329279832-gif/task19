@@ -28,6 +28,8 @@
   // ========== Web Worker ==========
   let worker = null;
   let currentRequestVersion = 0;
+  let pendingContextId = null;      // scenarioId or null (baseline) when last sent
+  let pendingIsBaseline = false;    // whether the last send operated on main state baseline
 
   function initWorker() {
     if (worker) worker.terminate();
@@ -40,14 +42,30 @@
   }
 
   function handleWorkerMessage(e) {
-    const { action, data, requestVersion } = e.data;
-    // Discard stale answers for non-scenario actions
-    if (requestVersion !== undefined && requestVersion !== currentRequestVersion && action !== 'scenarioResult') return;
+    const { action, data, requestVersion, scenarioId, scenarioVersion } = e.data;
+
+    // === Scenario results: validate by scenarioId + calcVersion ===
+    if (action === 'scenarioResult') {
+      handleScenarioResult(data, requestVersion, scenarioVersion);
+      return;
+    }
+
+    // === Main-state operations: discard stale ===
+    if (requestVersion !== undefined && requestVersion !== currentRequestVersion) {
+      return; // stale result from a superseded request
+    }
+
+    // For baseline operations: if user switched to a scenario view after sending, discard
+    // UNLESS this result was explicitly sent for a scenario (has scenarioId)
+    if (!scenarioId && pendingIsBaseline && sandboxMode && scenarioManager.activeId) {
+      return;
+    }
+
     switch (action) {
       case 'autoScheduleResult':
         state.scheduled = data.scheduled;
         state.alerts = data.alerts;
-        history.push(state.scheduled);
+        pushToHistory(state.scheduled, null);
         onScheduleUpdated();
         setStatus(`自动排产完成：${data.scheduled.length} 个工序已排程`);
         break;
@@ -63,33 +81,91 @@
       case 'insertResult':
         state.scheduled = data.scheduled;
         state.alerts = data.alerts;
-        history.push(state.scheduled);
+        pushToHistory(state.scheduled, null);
         onScheduleUpdated();
         setStatus('插单排产完成');
         break;
       case 'recalcResult':
-        state.scheduled = data.updated;
-        state.alerts = data.alerts;
-        history.push(state.scheduled);
-        onScheduleUpdated();
+        handleRecalcResult(data, scenarioId, scenarioVersion);
+        break;
+    }
+  }
+
+  function handleRecalcResult(data, scenarioId, scenarioVersion) {
+    // If the recalc was for a scenario (sandbox drag), apply to scenario
+    if (scenarioId && sandboxMode) {
+      const sc = scenarioManager.getScenario(scenarioId);
+      if (sc) {
+        // Verify this scenario hasn't been recalculated again (version check)
+        if (scenarioVersion !== undefined && scenarioVersion !== sc.calcVersion) {
+          return; // stale — scenario was modified after this drag was sent
+        }
+        sc.scheduled = data.updated;
+        sc.alerts = data.alerts;
+        pushToHistory(sc.scheduled, sc.id);
+        scenarioManager.computeMetrics(sc);
+        if (scenarioManager.activeId === sc.id) {
+          renderGantt();
+          renderAlerts();
+          renderStats();
+          renderMaintenance();
+          renderScenarioCards();
+        }
         if (data.cascadeUpdates && data.cascadeUpdates.length > 0) {
           setStatus(`拖拽完成，${data.cascadeUpdates.length} 个后续工序已联动调整`);
         } else {
           setStatus('拖拽调整完成');
         }
-        break;
-      case 'scenarioResult':
-        handleScenarioResult(data);
-        break;
+        return;
+      }
+    }
+    // Baseline recalc
+    state.scheduled = data.updated;
+    state.alerts = data.alerts;
+    pushToHistory(state.scheduled, null);
+    onScheduleUpdated();
+    if (data.cascadeUpdates && data.cascadeUpdates.length > 0) {
+      setStatus(`拖拽完成，${data.cascadeUpdates.length} 个后续工序已联动调整`);
+    } else {
+      setStatus('拖拽调整完成');
     }
   }
 
   function sendToWorker(action, extraData) {
     currentRequestVersion++;
+    pendingContextId = (sandboxMode && scenarioManager.activeId) ? scenarioManager.activeId : null;
+    pendingIsBaseline = true;  // sendToWorker always operates on main state
     worker.postMessage({
       action,
       data: { ...state, ...extraData },
       requestVersion: currentRequestVersion
+    });
+  }
+
+  function sendScenarioToWorker(scenarioId, action, extraData) {
+    currentRequestVersion++;
+    const sc = scenarioManager.getScenario(scenarioId);
+    if (!sc) return;
+    pendingContextId = scenarioId;
+    pendingIsBaseline = false;
+    worker.postMessage({
+      action,
+      data: {
+        orders: sc.orders,
+        processes: sc.processes,
+        equipment: sc.equipment,
+        shifts: sc.shifts,
+        materials: sc.materials,
+        routes: sc.routes,
+        maintenanceWindows: sc.maintenanceWindows,
+        scheduled: sc.scheduled,
+        alerts: sc.alerts,
+        risks: sc.risks,
+        ...extraData
+      },
+      requestVersion: currentRequestVersion,
+      scenarioId: scenarioId,
+      scenarioVersion: sc.calcVersion
     });
   }
 
@@ -100,10 +176,31 @@
     document.getElementById('btnRedo').disabled = !canRedo;
   };
 
+  // Push scheduled data to the correct history (scenario or baseline)
+  function pushToHistory(scheduled, scenarioId) {
+    if (scenarioId) {
+      const sc = scenarioManager.getScenario(scenarioId);
+      if (sc) sc.history.push(scheduled);
+    } else {
+      history.push(scheduled);
+    }
+  }
+
   // ========== Gantt ==========
   const gantt = new GanttChart(document.getElementById('ganttContainer'));
 
   gantt.onDragEnd = (movedProcess) => {
+    if (sandboxMode && scenarioManager.activeId) {
+      const sc = scenarioManager.getActiveScenario();
+      if (sc) {
+        // Route recalc through scenario-scoped worker call
+        sendScenarioToWorker(sc.id, 'recalcAfterDrag', {
+          movedProcess,
+          allScheduled: sc.scheduled
+        });
+        return;
+      }
+    }
     sendToWorker('recalcAfterDrag', {
       movedProcess,
       allScheduled: state.scheduled
@@ -115,7 +212,25 @@
   };
 
   gantt.onBarDblClick = (task) => {
-    // Toggle lock
+    // In sandbox mode, toggle lock on the active scenario's order
+    if (sandboxMode && scenarioManager.activeId) {
+      const sc = scenarioManager.getActiveScenario();
+      if (sc) {
+        const order = (sc.orders || []).find(o => o.id === task.orderId);
+        if (order) {
+          order.locked = !order.locked;
+          task.locked = order.locked;
+          // Update scheduled items in the scenario
+          (sc.scheduled || []).forEach(s => {
+            if (s.orderId === order.id) s.locked = order.locked;
+          });
+          renderGantt();
+          setStatus(order.locked ? `[${sc.name}] 订单 ${order.id} 已锁定` : `[${sc.name}] 订单 ${order.id} 已解锁`);
+        }
+      }
+      return;
+    }
+    // Baseline lock toggle
     const order = state.orders.find(o => o.id === task.orderId);
     if (order) {
       order.locked = !order.locked;
@@ -342,10 +457,11 @@
     const sc = scenarioManager.getScenario(scenarioId);
     if (!sc) return;
     sc.status = 'calculating';
+    sc.calcVersion = (sc.calcVersion || 0) + 1;
     renderScenarioCards();
     setStatus(`正在计算方案 "${sc.name}"...`);
 
-    // Send to worker
+    // Send to worker with scenario-scoped version
     worker.postMessage({
       action: 'scenarioCalculate',
       data: {
@@ -360,13 +476,20 @@
           maintenanceWindows: sc.maintenanceWindows
         }
       },
-      requestVersion: -1  // don't filter by version
+      requestVersion: currentRequestVersion,
+      scenarioId: sc.id,
+      scenarioVersion: sc.calcVersion
     });
   };
 
-  function handleScenarioResult(data) {
+  function handleScenarioResult(data, requestVersion, scenarioVersion) {
     const sc = scenarioManager.getScenario(data.scenarioId);
     if (!sc) return;
+
+    // Discard stale results: if scenario was recalculated again, this result is outdated
+    if (scenarioVersion !== undefined && scenarioVersion !== sc.calcVersion) {
+      return;
+    }
 
     if (data.error) {
       sc.status = 'error';
@@ -383,7 +506,7 @@
 
     renderScenarioCards();
 
-    // If this scenario is currently active, re-render views
+    // Only re-render views if this scenario is STILL the active one
     if (scenarioManager.activeId === data.scenarioId) {
       renderGantt();
       renderAlerts();
@@ -425,6 +548,10 @@
     } else {
       scenarioManager.setActive(scenarioId);
     }
+    // Invalidate any pending baseline worker results — context has changed
+    pendingContextId = scenarioManager.activeId;
+    pendingIsBaseline = !scenarioManager.activeId;
+
     renderScenarioCards();
     renderScenarioBanner();
     renderGantt();
@@ -677,6 +804,8 @@
     renderScenarioCards();
 
     if (mods.length > 0) {
+      // Invalidate any in-flight calculation for this scenario
+      sc.calcVersion = (sc.calcVersion || 0) + 1;
       setStatus(`方案 "${sc.name}" 已应用 ${mods.length} 项调整，正在重算...`);
       // Auto recalculate
       window.recalcScenario(currentAdjustScenarioId);
@@ -856,6 +985,19 @@
     const sc = scenarioManager.getScenario(scId);
     if (!sc) return;
 
+    // Consistency verification: ensure scenario data is fresh
+    const validation = scenarioManager.validateConsistency(scId);
+    if (!validation.valid) {
+      alert(`无法回滚：${validation.reason}\n请先重新计算此方案。`);
+      return;
+    }
+
+    // Warn if scenario has pending/running calculations
+    if (sc.status === 'calculating') {
+      alert('方案正在计算中，请等待完成后再回滚');
+      return;
+    }
+
     if (!confirm(`确定要将方案 "${sc.name}" 应用为主排产吗？\n当前主排产数据将被替换。`)) return;
 
     const rollbackData = scenarioManager.rollbackToScenario(scId);
@@ -898,12 +1040,25 @@
 
     // Export
     document.getElementById('btnExportSchedule').addEventListener('click', () => {
-      Exporter.exportScheduleCSV(state.scheduled, state.orders, state.equipment);
-      setStatus('排产表已导出');
+      const viewData = getViewData();
+      const isScenario = sandboxMode && scenarioManager.activeId;
+      Exporter.exportScheduleCSV(
+        viewData.scheduled || [],
+        viewData.orders || [],
+        viewData.equipment || []
+      );
+      setStatus(isScenario ? `方案排产表已导出` : '排产表已导出');
     });
     document.getElementById('btnExportRisk').addEventListener('click', () => {
-      Exporter.exportRiskReport(state.alerts, state.risks, state.scheduled, state.orders);
-      setStatus('风险报告已导出');
+      const viewData = getViewData();
+      const isScenario = sandboxMode && scenarioManager.activeId;
+      Exporter.exportRiskReport(
+        viewData.alerts || [],
+        viewData.risks || [],
+        viewData.scheduled || [],
+        viewData.orders || []
+      );
+      setStatus(isScenario ? `方案风险报告已导出` : '风险报告已导出');
     });
 
     // Undo/Redo
@@ -1007,6 +1162,29 @@
         return;
       }
       const scenarios = selectedIds.map(id => scenarioManager.getScenario(id)).filter(Boolean);
+      if (scenarios.length < 2) {
+        alert('选中的方案不存在');
+        return;
+      }
+      // Verify all scenarios are in ready state
+      const notReady = scenarios.filter(sc => sc.status !== 'ready');
+      if (notReady.length > 0) {
+        const names = notReady.map(sc => `"${sc.name}"(${sc.status === 'calculating' ? '计算中' : '未计算'})`).join('、');
+        alert(`以下方案尚未完成计算，请先重算后再导出：\n${names}`);
+        return;
+      }
+      // Verify data consistency for each scenario
+      const inconsistencies = [];
+      for (const sc of scenarios) {
+        const v = scenarioManager.validateConsistency(sc.id);
+        if (!v.valid) {
+          inconsistencies.push(`"${sc.name}": ${v.reason}`);
+        }
+      }
+      if (inconsistencies.length > 0) {
+        alert(`以下方案数据不一致，请重新计算后再导出：\n${inconsistencies.join('\n')}`);
+        return;
+      }
       Exporter.exportComparisonReport(scenarios, scenarioManager.compare(selectedIds));
       setStatus('对比报告已导出');
     });

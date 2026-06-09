@@ -57,7 +57,9 @@ class ScenarioManager {
       // Metrics (computed after scheduling)
       metrics: null,
       // Status: pending | calculating | ready | error
-      status: 'pending'
+      status: 'pending',
+      // Worker request version for async isolation (incremented on each recalc)
+      calcVersion: 0
     };
     this.scenarios.set(id, scenario);
     return scenario;
@@ -75,6 +77,7 @@ class ScenarioManager {
     dup.metrics = source.metrics ? { ...source.metrics } : null;
     dup.status = source.status;
     dup.modifications = deepClone(source.modifications);
+    dup.calcVersion = source.calcVersion || 0;
     return dup;
   }
 
@@ -404,6 +407,47 @@ class ScenarioManager {
     };
   }
 
+  // ========== Consistency Validation ==========
+
+  // Validate that a scenario's metrics match its scheduled data (detect stale state)
+  validateConsistency(scenarioId) {
+    const sc = this.scenarios.get(scenarioId);
+    if (!sc) return { valid: false, reason: '方案不存在' };
+    if (sc.status !== 'ready') return { valid: false, reason: `方案状态为 "${sc.status}"，尚未完成计算` };
+    if (!sc.metrics) return { valid: false, reason: '方案指标数据缺失' };
+    if (!sc.scheduled || sc.scheduled.length === 0) {
+      // Empty scheduled is valid only if there are no orders
+      if ((sc.orders || []).length > 0) return { valid: false, reason: '方案有订单但无排产结果' };
+    }
+    // Verify scheduledCount matches actual scheduled array length
+    if (sc.metrics.scheduledCount !== undefined && sc.metrics.scheduledCount !== (sc.scheduled || []).length) {
+      return { valid: false, reason: `指标记录的工序数(${sc.metrics.scheduledCount})与实际(${(sc.scheduled || []).length})不一致` };
+    }
+    // Verify metrics were computed from current data
+    const recomputed = this._quickMetricsCheck(sc);
+    if (!recomputed.match) return { valid: false, reason: recomputed.reason };
+    return { valid: true, reason: null };
+  }
+
+  // Quick sanity check: recompute a few key metrics and compare
+  _quickMetricsCheck(scenario) {
+    const scheduled = scenario.scheduled || [];
+    const orders = scenario.orders || [];
+    // Recompute delayed count
+    let delayedOrders = 0;
+    for (const order of orders) {
+      const orderProcs = scheduled.filter(s => s.orderId === order.id);
+      if (orderProcs.length === 0) continue;
+      const lastEnd = Math.max(...orderProcs.map(p => p.scheduledEnd || 0));
+      const deadline = new Date(order.deadline).getTime();
+      if (lastEnd > deadline) delayedOrders++;
+    }
+    if (scenario.metrics.delayedOrders !== undefined && scenario.metrics.delayedOrders !== delayedOrders) {
+      return { match: false, reason: `延期订单数不一致(指标:${scenario.metrics.delayedOrders}, 实际:${delayedOrders})` };
+    }
+    return { match: true };
+  }
+
   // ========== Serialization ==========
 
   toJSON() {
@@ -430,7 +474,8 @@ class ScenarioManager {
         risks: sc.risks,
         modifications: sc.modifications,
         metrics: sc.metrics,
-        status: sc.status
+        status: sc.status,
+        calcVersion: sc.calcVersion || 0
       });
     }
     return data;
@@ -445,7 +490,8 @@ class ScenarioManager {
     for (const scData of (data.scenarios || [])) {
       const sc = {
         ...scData,
-        history: new HistoryManager(30)
+        history: new HistoryManager(30),
+        calcVersion: scData.calcVersion || 0
       };
       this.scenarios.set(sc.id, sc);
     }
