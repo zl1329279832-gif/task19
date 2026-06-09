@@ -2,22 +2,28 @@
 // Handles: auto-scheduling, conflict detection, risk analysis, dependency resolution
 
 self.onmessage = function(e) {
-  const { action, data } = e.data;
+  const { action, data, requestVersion } = e.data;
+  let result;
   switch (action) {
     case 'autoSchedule':
-      self.postMessage({ action: 'autoScheduleResult', data: autoSchedule(data) });
+      result = autoSchedule(data);
+      self.postMessage({ action: 'autoScheduleResult', data: result, requestVersion });
       break;
     case 'detectConflicts':
-      self.postMessage({ action: 'conflictResult', data: detectConflicts(data) });
+      result = detectConflicts(data);
+      self.postMessage({ action: 'conflictResult', data: result, requestVersion });
       break;
     case 'analyzeRisks':
-      self.postMessage({ action: 'riskResult', data: analyzeRisks(data) });
+      result = analyzeRisks(data);
+      self.postMessage({ action: 'riskResult', data: result, requestVersion });
       break;
     case 'insertOrder':
-      self.postMessage({ action: 'insertResult', data: insertOrder(data) });
+      result = insertOrder(data);
+      self.postMessage({ action: 'insertResult', data: result, requestVersion });
       break;
     case 'recalcAfterDrag':
-      self.postMessage({ action: 'recalcResult', data: recalcAfterDrag(data) });
+      result = recalcAfterDrag(data);
+      self.postMessage({ action: 'recalcResult', data: result, requestVersion });
       break;
   }
 };
@@ -480,11 +486,24 @@ function analyzeRisks(data) {
 // ========== Insert Order ==========
 function insertOrder(data) {
   const { newOrder, scheduled, processes, equipment, shifts, materials, routes, maintenanceWindows } = data;
+
+  // Merge scheduled times into processes for locked orders so they are preserved
+  const mergedProcesses = (processes || []).map(p => {
+    const order = (data.orders || []).find(o => o.id === p.orderId);
+    if (order && order.locked) {
+      const sched = (scheduled || []).find(s => s.id === p.id);
+      if (sched && sched.scheduledStart && sched.scheduledEnd) {
+        return { ...p, scheduledStart: sched.scheduledStart, scheduledEnd: sched.scheduledEnd };
+      }
+    }
+    return p;
+  });
+
   // Re-schedule with the new order at highest priority
   const allOrders = [...(data.orders || []), { ...newOrder, priority: 10, locked: false }];
   const result = autoSchedule({
     orders: allOrders,
-    processes,
+    processes: mergedProcesses,
     equipment,
     shifts,
     materials,
@@ -501,6 +520,29 @@ function insertOrder(data) {
   });
 
   return result;
+}
+
+// ========== Recursive Dependency Cascade ==========
+function _cascadeDependents(movedId, movedEnd, updated, cascadeMap) {
+  const dependents = updated.filter(s =>
+    s.dependencies && s.dependencies.includes(movedId)
+  );
+  for (const dep of dependents) {
+    const currentDep = cascadeMap.get(dep.id) || dep;
+    if (currentDep.scheduledStart < movedEnd) {
+      const delta = movedEnd - currentDep.scheduledStart;
+      const newStart = currentDep.scheduledStart + delta;
+      const newEnd = currentDep.scheduledEnd + delta;
+      cascadeMap.set(dep.id, { id: dep.id, scheduledStart: newStart, scheduledEnd: newEnd });
+      // Update in-place so deeper dependents see the new end time
+      const idx = updated.findIndex(s => s.id === dep.id);
+      if (idx >= 0) {
+        updated[idx] = { ...updated[idx], scheduledStart: newStart, scheduledEnd: newEnd };
+      }
+      // Recursively cascade to this task's dependents
+      _cascadeDependents(dep.id, newEnd, updated, cascadeMap);
+    }
+  }
 }
 
 // ========== Recalc After Drag ==========
@@ -575,29 +617,10 @@ function recalcAfterDrag(data) {
     }
   }
 
-  // Check dependency: if moved process has dependents, they may need to shift
-  const dependents = updated.filter(s =>
-    s.dependencies && s.dependencies.includes(movedProcess.id) && s.orderId === movedProcess.orderId
-  );
-  const cascadeUpdates = [];
-  for (const dep of dependents) {
-    if (dep.scheduledStart < movedProcess.scheduledEnd) {
-      const shift = movedProcess.scheduledEnd - dep.scheduledStart;
-      cascadeUpdates.push({
-        id: dep.id,
-        scheduledStart: dep.scheduledStart + shift,
-        scheduledEnd: dep.scheduledEnd + shift
-      });
-    }
-  }
-
-  // Apply cascade updates
-  for (const cu of cascadeUpdates) {
-    const idx = updated.findIndex(s => s.id === cu.id);
-    if (idx >= 0) {
-      updated[idx] = { ...updated[idx], ...cu };
-    }
-  }
+  // Recursive dependency cascade: propagate through full dependency chain
+  const cascadeMap = new Map();
+  _cascadeDependents(movedProcess.id, movedProcess.scheduledEnd, updated, cascadeMap);
+  const cascadeUpdates = Array.from(cascadeMap.values());
 
   // Re-run full conflict detection
   const fullConflicts = detectConflicts({ scheduled: updated, shifts, maintenanceWindows, materials, orders });

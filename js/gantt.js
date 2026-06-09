@@ -149,6 +149,17 @@ class GanttChart {
             teamKey = `${shift.team} (${shift.name})`;
             break;
           }
+          // Also check previous day for cross-day shifts
+          // (e.g. task at 03:00 belongs to yesterday's 22:00-06:00 night shift)
+          if (shift.crossDay) {
+            const prevSd = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate() - 1);
+            const prevSs = new Date(prevSd.getFullYear(), prevSd.getMonth(), prevSd.getDate(), sh, sm).getTime();
+            const prevSe = new Date(prevSd.getFullYear(), prevSd.getMonth(), prevSd.getDate() + 1, eh, em).getTime();
+            if (taskStart >= prevSs && taskStart < prevSe) {
+              teamKey = `${shift.team} (${shift.name})`;
+              break;
+            }
+          }
         }
         if (!byTeam.has(teamKey)) byTeam.set(teamKey, []);
         byTeam.get(teamKey).push(s);
@@ -332,12 +343,14 @@ class GanttChart {
     for (const mw of this.maintenanceWindows) {
       const mwStart = new Date(mw.start).getTime();
       const mwEnd = new Date(mw.end).getTime();
-      // Find row for this equipment
-      const rowIdx = this.rows.findIndex(r => r.id === mw.equipmentId);
-      if (rowIdx >= 0) {
-        const x1 = Math.max(this.timeToX(mwStart), this.labelWidth);
-        const x2 = Math.min(this.timeToX(mwEnd), w);
-        if (x2 > this.labelWidth) {
+      const x1 = Math.max(this.timeToX(mwStart), this.labelWidth);
+      const x2 = Math.min(this.timeToX(mwEnd), w);
+      if (x2 <= this.labelWidth) continue;
+
+      if (this.viewMode === 'equipment') {
+        // Equipment view: draw on the specific equipment row
+        const rowIdx = this.rows.findIndex(r => r.id === mw.equipmentId);
+        if (rowIdx >= 0) {
           const y = rowIdx * this.rowHeight;
           ctx.fillStyle = this.colors.maintenance;
           ctx.fillRect(x1, y, x2 - x1, this.rowHeight);
@@ -349,6 +362,18 @@ class GanttChart {
           ctx.font = '9px sans-serif';
           ctx.fillText(`🔧 ${mw.type}`, x1 + 3, y + 12);
         }
+      } else {
+        // Order / Team view: draw as translucent bands spanning all rows
+        const totalH = this.rows.length * this.rowHeight;
+        ctx.fillStyle = this.colors.maintenance;
+        ctx.fillRect(x1, 0, x2 - x1, totalH);
+        ctx.strokeStyle = this.colors.maintBorder;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(x1, 0, x2 - x1, totalH);
+        ctx.setLineDash([]);
+        ctx.fillStyle = this.colors.maintBorder;
+        ctx.font = '9px sans-serif';
+        ctx.fillText(`🔧 ${mw.equipmentId} ${mw.type}`, x1 + 3, 10);
       }
     }
 
