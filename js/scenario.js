@@ -57,7 +57,9 @@ class ScenarioManager {
       // Metrics (computed after scheduling)
       metrics: null,
       // Status: pending | calculating | ready | error
-      status: 'pending'
+      status: 'pending',
+      // Calculation version for stale response detection
+      calcVersion: 0
     };
     this.scenarios.set(id, scenario);
     return scenario;
@@ -75,6 +77,7 @@ class ScenarioManager {
     dup.metrics = source.metrics ? { ...source.metrics } : null;
     dup.status = source.status;
     dup.modifications = deepClone(source.modifications);
+    dup.calcVersion = 0;
     return dup;
   }
 
@@ -95,6 +98,26 @@ class ScenarioManager {
     if (id === null || this.scenarios.has(id)) {
       this.activeId = id;
     }
+  }
+
+  // Increment and return the new calcVersion for stale response detection
+  incrementCalcVersion(scenarioId) {
+    const sc = this.scenarios.get(scenarioId);
+    if (!sc) return -1;
+    sc.calcVersion = (sc.calcVersion || 0) + 1;
+    return sc.calcVersion;
+  }
+
+  // Validate that a response's calcVersion matches the scenario's current version
+  validateCalcVersion(scenarioId, version) {
+    const sc = this.scenarios.get(scenarioId);
+    if (!sc) return false;
+    return sc.calcVersion === version;
+  }
+
+  // Check if any scenario is currently calculating
+  isAnyCalculating() {
+    return this.getAllScenarios().some(sc => sc.status === 'calculating');
   }
 
   getAllScenarios() {
@@ -430,7 +453,8 @@ class ScenarioManager {
         risks: sc.risks,
         modifications: sc.modifications,
         metrics: sc.metrics,
-        status: sc.status
+        status: sc.status,
+        calcVersion: sc.calcVersion || 0
       });
     }
     return data;
@@ -445,7 +469,8 @@ class ScenarioManager {
     for (const scData of (data.scenarios || [])) {
       const sc = {
         ...scData,
-        history: new HistoryManager(30)
+        history: new HistoryManager(30),
+        calcVersion: scData.calcVersion || 0
       };
       this.scenarios.set(sc.id, sc);
     }

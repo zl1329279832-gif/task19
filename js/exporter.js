@@ -78,7 +78,17 @@ const Exporter = {
   exportComparisonReport(scenarios, comparison) {
     let report = '=== 多方案 What-if 排产沙盘对比报告 ===\n';
     report += `生成时间: ${new Date().toLocaleString('zh-CN')}\n`;
-    report += `对比方案数: ${scenarios.length}\n\n`;
+    report += `对比方案数: ${scenarios.length}\n`;
+
+    // Data consistency warning
+    const issues = this.validateExportConsistency(scenarios);
+    if (issues.length > 0) {
+      report += '\n⚠️ 数据一致性警告:\n';
+      for (const issue of issues) {
+        report += `  - ${issue}\n`;
+      }
+    }
+    report += '\n';
 
     // Summary table header
     report += '--- 方案概览 ---\n';
@@ -210,6 +220,22 @@ const Exporter = {
     }
 
     this.download(`方案对比报告_${this.dateStr()}.txt`, report, 'text/plain');
+  },
+
+  validateExportConsistency(scenarios) {
+    const issues = [];
+    for (const sc of (scenarios || [])) {
+      if (sc.status === 'calculating') {
+        issues.push(`方案 "${sc.name}" 正在计算中，数据可能不完整`);
+      }
+      if (sc.status === 'error') {
+        issues.push(`方案 "${sc.name}" 计算出错，数据可能不准确`);
+      }
+      if (sc.status === 'pending') {
+        issues.push(`方案 "${sc.name}" 尚未计算`);
+      }
+    }
+    return issues;
   },
 
   dateStr() {

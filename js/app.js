@@ -27,7 +27,7 @@
 
   // ========== Web Worker ==========
   let worker = null;
-  let currentRequestVersion = 0;
+  let baselineRequestVersion = 0;
 
   function initWorker() {
     if (worker) worker.terminate();
@@ -40,37 +40,65 @@
   }
 
   function handleWorkerMessage(e) {
-    const { action, data, requestVersion } = e.data;
-    // Discard stale answers for non-scenario actions
-    if (requestVersion !== undefined && requestVersion !== currentRequestVersion && action !== 'scenarioResult') return;
+    const { action, data, requestVersion, scenarioId, calcVersion } = e.data;
+
+    // scenarioResult has its own dedicated handler with calcVersion check
+    if (action === 'scenarioResult') {
+      handleScenarioResult(data, calcVersion);
+      return;
+    }
+
+    // Determine target and validate staleness
+    let target;          // the object to write scheduled/alerts/risks into
+    let targetHistory;   // the history stack to push to
+    let targetScenarioId = null;
+
+    if (scenarioId) {
+      // This result was requested while viewing a scenario
+      const sc = scenarioManager.getScenario(scenarioId);
+      if (!sc) return; // scenario deleted since request was sent
+      if (!scenarioManager.validateCalcVersion(scenarioId, calcVersion)) return; // stale
+      target = sc;
+      targetHistory = sc.history;
+      targetScenarioId = scenarioId;
+    } else {
+      // Baseline operation
+      if (requestVersion !== undefined && requestVersion !== baselineRequestVersion) return; // stale
+      // If we're now viewing a scenario, discard baseline results to prevent overwrite
+      if (sandboxMode && scenarioManager.activeId) return;
+      target = state;
+      targetHistory = history;
+    }
+
+    // Apply results to correct target
     switch (action) {
       case 'autoScheduleResult':
-        state.scheduled = data.scheduled;
-        state.alerts = data.alerts;
-        history.push(state.scheduled);
+        target.scheduled = data.scheduled;
+        target.alerts = data.alerts;
+        targetHistory.push(target.scheduled, targetScenarioId);
         onScheduleUpdated();
         setStatus(`自动排产完成：${data.scheduled.length} 个工序已排程`);
         break;
       case 'conflictResult':
-        state.alerts = data;
+        target.alerts = data;
         renderAlerts();
         break;
       case 'riskResult':
-        state.risks = data;
+        target.risks = data;
         renderAlerts();
         setStatus(`风险分析完成：${data.length} 项风险`);
         break;
       case 'insertResult':
-        state.scheduled = data.scheduled;
-        state.alerts = data.alerts;
-        history.push(state.scheduled);
+        target.scheduled = data.scheduled;
+        target.alerts = data.alerts;
+        targetHistory.push(target.scheduled, targetScenarioId);
         onScheduleUpdated();
         setStatus('插单排产完成');
         break;
       case 'recalcResult':
-        state.scheduled = data.updated;
-        state.alerts = data.alerts;
-        history.push(state.scheduled);
+        target.scheduled = data.updated;
+        target.alerts = data.alerts;
+        targetHistory.push(target.scheduled, targetScenarioId);
         onScheduleUpdated();
         if (data.cascadeUpdates && data.cascadeUpdates.length > 0) {
           setStatus(`拖拽完成，${data.cascadeUpdates.length} 个后续工序已联动调整`);
@@ -78,19 +106,33 @@
           setStatus('拖拽调整完成');
         }
         break;
-      case 'scenarioResult':
-        handleScenarioResult(data);
-        break;
     }
   }
 
   function sendToWorker(action, extraData) {
-    currentRequestVersion++;
-    worker.postMessage({
-      action,
-      data: { ...state, ...extraData },
-      requestVersion: currentRequestVersion
-    });
+    const activeScenario = sandboxMode ? scenarioManager.getActiveScenario() : null;
+    const sourceData = activeScenario || state;
+
+    if (activeScenario) {
+      // Scenario-targeted operation: use per-scenario calcVersion
+      const calcVersion = scenarioManager.incrementCalcVersion(activeScenario.id);
+      worker.postMessage({
+        action,
+        data: { ...sourceData, ...extraData },
+        scenarioId: activeScenario.id,
+        calcVersion
+      });
+    } else {
+      // Baseline-targeted operation
+      baselineRequestVersion++;
+      worker.postMessage({
+        action,
+        data: { ...state, ...extraData },
+        requestVersion: baselineRequestVersion,
+        scenarioId: null,
+        calcVersion: null
+      });
+    }
   }
 
   // ========== History ==========
@@ -104,9 +146,10 @@
   const gantt = new GanttChart(document.getElementById('ganttContainer'));
 
   gantt.onDragEnd = (movedProcess) => {
+    const viewData = getViewData();
     sendToWorker('recalcAfterDrag', {
       movedProcess,
-      allScheduled: state.scheduled
+      allScheduled: viewData.scheduled
     });
   };
 
@@ -115,8 +158,9 @@
   };
 
   gantt.onBarDblClick = (task) => {
-    // Toggle lock
-    const order = state.orders.find(o => o.id === task.orderId);
+    // Toggle lock on the correct data target
+    const viewData = getViewData();
+    const order = (viewData.orders || []).find(o => o.id === task.orderId);
     if (order) {
       order.locked = !order.locked;
       task.locked = order.locked;
@@ -342,10 +386,11 @@
     const sc = scenarioManager.getScenario(scenarioId);
     if (!sc) return;
     sc.status = 'calculating';
+    const calcVersion = scenarioManager.incrementCalcVersion(scenarioId);
     renderScenarioCards();
     setStatus(`正在计算方案 "${sc.name}"...`);
 
-    // Send to worker
+    // Send to worker with per-scenario calcVersion
     worker.postMessage({
       action: 'scenarioCalculate',
       data: {
@@ -360,13 +405,20 @@
           maintenanceWindows: sc.maintenanceWindows
         }
       },
-      requestVersion: -1  // don't filter by version
+      scenarioId: sc.id,
+      calcVersion: calcVersion
     });
   };
 
-  function handleScenarioResult(data) {
+  function handleScenarioResult(data, calcVersion) {
     const sc = scenarioManager.getScenario(data.scenarioId);
     if (!sc) return;
+
+    // Staleness check: reject if calcVersion doesn't match
+    if (calcVersion !== undefined && calcVersion !== null &&
+        !scenarioManager.validateCalcVersion(data.scenarioId, calcVersion)) {
+      return; // stale result for this scenario
+    }
 
     if (data.error) {
       sc.status = 'error';
@@ -856,6 +908,20 @@
     const sc = scenarioManager.getScenario(scId);
     if (!sc) return;
 
+    // Validate scenario status before rollback
+    if (sc.status === 'calculating') {
+      alert('该方案正在计算中，请等待计算完成后再回滚');
+      return;
+    }
+    if (sc.status === 'error') {
+      alert('该方案计算出错，无法回滚');
+      return;
+    }
+    if (sc.status === 'pending') {
+      alert('该方案尚未计算，请先重算后再回滚');
+      return;
+    }
+
     if (!confirm(`确定要将方案 "${sc.name}" 应用为主排产吗？\n当前主排产数据将被替换。`)) return;
 
     const rollbackData = scenarioManager.rollbackToScenario(scId);
@@ -898,11 +964,19 @@
 
     // Export
     document.getElementById('btnExportSchedule').addEventListener('click', () => {
-      Exporter.exportScheduleCSV(state.scheduled, state.orders, state.equipment);
+      const viewData = getViewData();
+      if (sandboxMode && scenarioManager.isAnyCalculating()) {
+        if (!confirm('当前有方案正在计算中，导出数据可能不完整，是否继续？')) return;
+      }
+      Exporter.exportScheduleCSV(viewData.scheduled, viewData.orders, viewData.equipment);
       setStatus('排产表已导出');
     });
     document.getElementById('btnExportRisk').addEventListener('click', () => {
-      Exporter.exportRiskReport(state.alerts, state.risks, state.scheduled, state.orders);
+      const viewData = getViewData();
+      if (sandboxMode && scenarioManager.isAnyCalculating()) {
+        if (!confirm('当前有方案正在计算中，导出数据可能不完整，是否继续？')) return;
+      }
+      Exporter.exportRiskReport(viewData.alerts, viewData.risks, viewData.scheduled, viewData.orders);
       setStatus('风险报告已导出');
     });
 
@@ -968,7 +1042,8 @@
 
     // Auto schedule
     document.getElementById('btnAutoSchedule').addEventListener('click', () => {
-      if (state.orders.length === 0) {
+      const viewData = getViewData();
+      if ((viewData.orders || []).length === 0) {
         alert('请先导入订单数据');
         return;
       }
@@ -1007,6 +1082,10 @@
         return;
       }
       const scenarios = selectedIds.map(id => scenarioManager.getScenario(id)).filter(Boolean);
+      const issues = Exporter.validateExportConsistency(scenarios);
+      if (issues.length > 0) {
+        if (!confirm('以下方案存在数据一致性问题：\n' + issues.join('\n') + '\n\n是否仍然导出？')) return;
+      }
       Exporter.exportComparisonReport(scenarios, scenarioManager.compare(selectedIds));
       setStatus('对比报告已导出');
     });
@@ -1219,6 +1298,7 @@
 
   // ========== Insert Order ==========
   function doInsertOrder() {
+    const viewData = getViewData();
     const newOrder = {
       id: document.getElementById('insertOrderId').value || 'URGENT-' + Date.now(),
       productType: document.getElementById('insertProduct').value || '紧急产品',
@@ -1230,8 +1310,9 @@
 
     // Create basic processes for the new order using existing equipment
     const newProcesses = [];
-    if (state.equipment.length > 0) {
-      const eq = state.equipment[0];
+    const equipList = viewData.equipment || [];
+    if (equipList.length > 0) {
+      const eq = equipList[0];
       newProcesses.push({
         id: `INS-${newOrder.id}-P1`,
         name: '紧急加工',
@@ -1245,18 +1326,18 @@
     setStatus('正在执行插单排产...');
     sendToWorker('insertOrder', {
       newOrder,
-      orders: state.orders,
-      processes: [...state.processes, ...newProcesses],
-      equipment: state.equipment,
-      shifts: state.shifts,
-      materials: state.materials,
-      routes: state.routes,
-      maintenanceWindows: state.maintenanceWindows
+      orders: viewData.orders,
+      processes: [...(viewData.processes || []), ...newProcesses],
+      equipment: viewData.equipment,
+      shifts: viewData.shifts,
+      materials: viewData.materials,
+      routes: viewData.routes,
+      maintenanceWindows: viewData.maintenanceWindows
     });
 
-    // Add to state
-    state.orders.push(newOrder);
-    state.processes.push(...newProcesses);
+    // Add to the correct data target
+    viewData.orders.push(newOrder);
+    viewData.processes.push(...newProcesses);
 
     closeModal('insertModal');
   }
@@ -1450,10 +1531,11 @@
 
   // Global helper for lock toggle
   window.toggleLock = function (orderId) {
-    const order = state.orders.find(o => o.id === orderId);
+    const viewData = getViewData();
+    const order = (viewData.orders || []).find(o => o.id === orderId);
     if (order) {
       order.locked = !order.locked;
-      state.scheduled.forEach(s => {
+      (viewData.scheduled || []).forEach(s => {
         if (s.orderId === orderId) s.locked = order.locked;
       });
       renderGantt();

@@ -7,12 +7,15 @@ class HistoryManager {
     this.onchange = null;
   }
 
-  // Save a snapshot of the scheduled data
-  push(state) {
+  // Save a snapshot of the scheduled data with optional scenarioId binding
+  push(state, scenarioId) {
     // Remove any redo states
     this.stack = this.stack.slice(0, this.pointer + 1);
-    // Deep clone
-    const snapshot = JSON.parse(JSON.stringify(state));
+    // Deep clone and bind to scenario
+    const snapshot = {
+      data: JSON.parse(JSON.stringify(state)),
+      scenarioId: scenarioId || null
+    };
     this.stack.push(snapshot);
     if (this.stack.length > this.maxSize) {
       this.stack.shift();
@@ -24,21 +27,28 @@ class HistoryManager {
   undo() {
     if (!this.canUndo()) return null;
     this.pointer--;
-    const state = JSON.parse(JSON.stringify(this.stack[this.pointer]));
+    const entry = this.stack[this.pointer];
     this._notify();
-    return state;
+    return JSON.parse(JSON.stringify(entry.data));
   }
 
   redo() {
     if (!this.canRedo()) return null;
     this.pointer++;
-    const state = JSON.parse(JSON.stringify(this.stack[this.pointer]));
+    const entry = this.stack[this.pointer];
     this._notify();
-    return state;
+    return JSON.parse(JSON.stringify(entry.data));
   }
 
   canUndo() { return this.pointer > 0; }
   canRedo() { return this.pointer < this.stack.length - 1; }
+
+  // Reset the entire stack
+  clear() {
+    this.stack = [];
+    this.pointer = -1;
+    this._notify();
+  }
 
   _notify() {
     if (this.onchange) {
